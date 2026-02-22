@@ -25,8 +25,6 @@ endif()
 install(DIRECTORY
   urdf
   launch
-  rviz
-  config
   meshes
   DESTINATION share/${PROJECT_NAME}
 )
