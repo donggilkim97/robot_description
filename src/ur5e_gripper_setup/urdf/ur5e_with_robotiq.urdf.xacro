@@ -1,0 +1,60 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5e_custom_setup">
+
+  <!-- These args MUST exist because you use $(arg ...) below -->
+  <xacro:arg name="use_fake_hardware" default="true"/>
+  <xacro:arg name="sim_isaac" default="false"/>
+
+  <xacro:include filename="$(find ur_description)/urdf/ur_macro.xacro"/>
+  <xacro:include filename="$(find robotiq_description)/urdf/robotiq_2f_140_macro.urdf.xacro"/>
+  <xacro:include filename="$(find realsense2_description)/urdf/_d435.urdf.xacro"/>
+
+  <link name="world"/>
+
+  <xacro:ur_robot
+    name="ur5e"
+    tf_prefix=""
+    parent="world"
+    joint_limits_parameters_file="$(find ur_description)/config/ur5e/joint_limits.yaml"
+    kinematics_parameters_file="$(find ur_description)/config/ur5e/default_kinematics.yaml"
+    physical_parameters_file="$(find ur_description)/config/ur5e/physical_parameters.yaml"
+    visual_parameters_file="$(find ur_description)/config/ur5e/visual_parameters.yaml">
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </xacro:ur_robot>
+
+  <link name="camera_bracket_link">
+    <visual>
+      <geometry>
+        <mesh filename="package://ur5e_gripper_setup/meshes/camera_bracket.stl" scale="1 1 1"/>
+      </geometry>
+      <material name="gray">
+        <color rgba="1.0 0.65 0.0 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <geometry>
+        <mesh filename="package://ur5e_gripper_setup/meshes/camera_bracket.stl" scale="1 1 1"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="tool0_to_bracket" type="fixed">
+    <parent link="tool0"/>
+    <child link="camera_bracket_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- IMPORTANT: do NOT self-close the macro if you want to pass <origin> -->
+  <xacro:robotiq_gripper
+    name="RobotiqGripper"
+    prefix=""
+    parent="camera_bracket_link"
+    use_fake_hardware="$(arg use_fake_hardware)">
+    <origin xyz="0 0 0.01" rpy="0 0 0"/>
+  </xacro:robotiq_gripper>
+
+  <xacro:sensor_d435 parent="camera_bracket_link" name="camera">
+    <origin xyz="0 0.112 0.02" rpy="0 -1.5708 1.5708"/>
+  </xacro:sensor_d435>
+
+</robot>

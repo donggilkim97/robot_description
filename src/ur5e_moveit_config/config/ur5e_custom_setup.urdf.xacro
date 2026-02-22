@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="ur5e_custom_setup">
+
+  <!-- =========================
+       Arguments (safe demo defaults)
+       ========================= -->
+  <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+
+  <!-- Use ONE flag as the source of truth -->
+  <xacro:arg name="use_fake_hardware" default="true"/>
+  <xacro:arg name="sim_isaac" default="false"/>
+  <xacro:arg name="mock_sensor_commands" default="false"/>
+
+  <!-- Backward-compatible alias (some UR/MoveIt configs use this name) -->
+  <xacro:arg name="use_mock_hardware" default="$(arg use_fake_hardware)"/>
+
+  <!-- =========================
+       Robot model (includes gripper)
+       IMPORTANT: included files should read these args
+       ========================= -->
+  <xacro:include filename="$(find ur5e_gripper_setup)/urdf/ur5e_with_robotiq.urdf.xacro" />
+
+  <!-- =========================
+       ros2_control for UR arm (FakeSystem / real / Isaac)
+       ========================= -->
+  <xacro:include filename="ur5e_custom_setup.ros2_control.xacro" />
+
+  <xacro:ur5e_custom_setup_ros2_control
+      name="FakeSystem"
+      initial_positions_file="$(arg initial_positions_file)"
+      sim_isaac="$(arg sim_isaac)"
+      use_fake_hardware="$(arg use_fake_hardware)"
+      mock_sensor_commands="$(arg mock_sensor_commands)" />
+
+</robot>
