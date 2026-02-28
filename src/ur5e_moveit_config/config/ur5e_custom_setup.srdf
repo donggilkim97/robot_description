@@ -39,6 +39,15 @@
     <group_state name="close" group="gripper">
         <joint name="finger_joint" value="0.7"/>
     </group_state>
+    <passive_joint name="left_inner_knuckle_joint"/>
+    <passive_joint name="left_inner_finger_joint"/>
+    <passive_joint name="left_inner_finger_pad_joint"/>
+    <passive_joint name="left_outer_finger_joint"/>
+    <passive_joint name="right_inner_knuckle_joint"/>
+    <passive_joint name="right_inner_finger_joint"/>
+    <passive_joint name="right_inner_finger_pad_joint"/>
+    <passive_joint name="right_outer_knuckle_joint"/>
+    <passive_joint name="right_outer_finger_joint"/>
     <!--END EFFECTOR: Purpose: Represent information about an end effector.-->
     <end_effector name="robotiq_gripper" parent_link="camera_bracket_link" group="gripper" parent_group="ur_manipulator"/>
     <!--VIRTUAL JOINT: Purpose: this element defines a virtual joint between a robot link and an external frame of reference (considered fixed with respect to the robot)-->
@@ -168,4 +177,5 @@
     <disable_collisions link1="wrist_1_link" link2="wrist_2_link" reason="Adjacent"/>
     <disable_collisions link1="wrist_1_link" link2="wrist_3_link" reason="Never"/>
     <disable_collisions link1="wrist_2_link" link2="wrist_3_link" reason="Adjacent"/>
+    <disable_collisions link1="left_inner_finger_pad" link2="right_inner_finger_pad" reason="Adjacent" />
 </robot>
