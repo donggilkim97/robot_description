@@ -1,0 +1,390 @@
+donggil@donggil-XPS-15-9530:~/robot_description$ ros2 topic echo /joint_states --once
+Some, but not all, publishers are offering QoSDurabilityPolicy.TRANSIENT_LOCAL. Falling back to QoSDurabilityPolicy.VOLATILE as it will connect to all publishers
+header:
+  stamp:
+    sec: 671
+    nanosec: 350035013
+  frame_id: ''
+name:
+- shoulder_pan_joint
+- shoulder_lift_joint
+- elbow_joint
+- wrist_1_joint
+- wrist_2_joint
+- wrist_3_joint
+- finger_joint
+- left_inner_knuckle_joint
+- right_inner_knuckle_joint
+- right_outer_knuckle_joint
+- left_inner_finger_joint
+- right_inner_finger_joint
+position:
+- -0.2194
+- -1.9407
+- 1.8675
+- -1.4961
+- -1.5702
+- 2.9206
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+velocity:
+- -0.1838
+- -0.0282
+- -0.0046
+- 0.0045
+- -0.0018
+- 0.0022
+- -0.0131
+- 0.0045
+- -0.003
+- 0.0044
+- -0.0131
+- -0.0053
+effort:
+- 0.0019
+- -6.7875
+- -22.3809
+- -2.3204
+- 0.0042
+- -0.0001
+- -0.0172
+- 0.0092
+- 0.0092
+- 0.0172
+- -0.0014
+- -0.0014
+---
+donggil@donggil-XPS-15-9530:~/robot_description$ 
+
+
+
+
+
+
+donggil@donggil-XPS-15-9530:~/robot_description$ ros2 topic echo /joint_states --once
+Some, but not all, publishers are offering QoSDurabilityPolicy.TRANSIENT_LOCAL. Falling back to QoSDurabilityPolicy.VOLATILE as it will connect to all publishers
+header:
+  stamp:
+    sec: 684
+    nanosec: 483369031
+  frame_id: ''
+name:
+- shoulder_pan_joint
+- shoulder_lift_joint
+- elbow_joint
+- wrist_1_joint
+- wrist_2_joint
+- wrist_3_joint
+- finger_joint
+- left_inner_knuckle_joint
+- right_inner_knuckle_joint
+- right_outer_knuckle_joint
+- left_inner_finger_joint
+- right_inner_finger_joint
+position:
+- 0.1177
+- -1.8458
+- 1.805
+- -1.5289
+- -1.5698
+- 3.2577
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+velocity:
+- -0.2073
+- -0.0399
+- -0.0025
+- 0.0036
+- -0.0037
+- 0.0026
+- -0.0175
+- 0.0068
+- -0.0049
+- 0.0055
+- -0.0165
+- -0.0065
+effort:
+- 0.0063
+- -10.7077
+- -22.4151
+- -2.3178
+- -0.0188
+- -0.0001
+- -0.0172
+- 0.0092
+- 0.0092
+- 0.0172
+- -0.0014
+- -0.0014
+---
+donggil@donggil-XPS-15-9530:~/robot_description$ 
+
+
+
+
+donggil@donggil-XPS-15-9530:~/robot_description$ ros2 topic echo /joint_states --once
+Some, but not all, publishers are offering QoSDurabilityPolicy.TRANSIENT_LOCAL. Falling back to QoSDurabilityPolicy.VOLATILE as it will connect to all publishers
+header:
+  stamp:
+    sec: 695
+    nanosec: 166702922
+  frame_id: ''
+name:
+- shoulder_pan_joint
+- shoulder_lift_joint
+- elbow_joint
+- wrist_1_joint
+- wrist_2_joint
+- wrist_3_joint
+- finger_joint
+- left_inner_knuckle_joint
+- right_inner_knuckle_joint
+- right_outer_knuckle_joint
+- left_inner_finger_joint
+- right_inner_finger_joint
+position:
+- 0.4045
+- -1.6577
+- 1.8437
+- -1.5484
+- -2.0196
+- 3.592
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+velocity:
+- -0.1826
+- -0.0541
+- 0.0049
+- -0.0014
+- -0.0062
+- 0.0039
+- -0.0138
+- 0.0023
+- -0.0118
+- -0.0007
+- -0.0029
+- 0.0082
+effort:
+- -0.2366
+- -18.089
+- -21.7956
+- -2.0319
+- -0.5837
+- 0.0379
+- -0.0065
+- 0.0032
+- 0.0129
+- 0.0237
+- -0.002
+- -0.0004
+---
+donggil@donggil-XPS-15-9530:~/robot_description$ 
+
+
+
+
+
+donggil@donggil-XPS-15-9530:~/robot_description$ ros2 topic echo /joint_states --once
+Some, but not all, publishers are offering QoSDurabilityPolicy.TRANSIENT_LOCAL. Falling back to QoSDurabilityPolicy.VOLATILE as it will connect to all publishers
+header:
+  stamp:
+    sec: 714
+    nanosec: 416703926
+  frame_id: ''
+name:
+- shoulder_pan_joint
+- shoulder_lift_joint
+- elbow_joint
+- wrist_1_joint
+- wrist_2_joint
+- wrist_3_joint
+- finger_joint
+- left_inner_knuckle_joint
+- right_inner_knuckle_joint
+- right_outer_knuckle_joint
+- left_inner_finger_joint
+- right_inner_finger_joint
+position:
+- -0.9338
+- -1.7309
+- 1.9168
+- -1.2612
+- -1.2349
+- 2.1211
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+velocity:
+- -0.065
+- -0.0522
+- 0.0042
+- -0.0005
+- -0.0008
+- -0.0007
+- -0.0141
+- 0.0125
+- -0.0039
+- -0.0026
+- -0.0162
+- -0.0119
+effort:
+- -0.2982
+- -14.6123
+- -21.3887
+- -1.4876
+- 0.3911
+- -0.037
+- -0.0242
+- 0.0132
+- 0.0023
+- 0.0049
+- -0.0003
+- -0.0021
+---
+donggil@donggil-XPS-15-9530:~/robot_description$ 
+
+
+
+donggil@donggil-XPS-15-9530:~/robot_description$ ros2 topic echo /joint_states --once
+Some, but not all, publishers are offering QoSDurabilityPolicy.TRANSIENT_LOCAL. Falling back to QoSDurabilityPolicy.VOLATILE as it will connect to all publishers
+header:
+  stamp:
+    sec: 714
+    nanosec: 416703926
+  frame_id: ''
+name:
+- shoulder_pan_joint
+- shoulder_lift_joint
+- elbow_joint
+- wrist_1_joint
+- wrist_2_joint
+- wrist_3_joint
+- finger_joint
+- left_inner_knuckle_joint
+- right_inner_knuckle_joint
+- right_outer_knuckle_joint
+- left_inner_finger_joint
+- right_inner_finger_joint
+position:
+- -0.9338
+- -1.7309
+- 1.9168
+- -1.2612
+- -1.2349
+- 2.1211
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+velocity:
+- -0.065
+- -0.0522
+- 0.0042
+- -0.0005
+- -0.0008
+- -0.0007
+- -0.0141
+- 0.0125
+- -0.0039
+- -0.0026
+- -0.0162
+- -0.0119
+effort:
+- -0.2982
+- -14.6123
+- -21.3887
+- -1.4876
+- 0.3911
+- -0.037
+- -0.0242
+- 0.0132
+- 0.0023
+- 0.0049
+- -0.0003
+- -0.0021
+---
+donggil@donggil-XPS-15-9530:~/robot_description$ 
+
+
+
+
+
+
+donggil@donggil-XPS-15-9530:~/robot_description$ ros2 topic echo /joint_states --once
+Some, but not all, publishers are offering QoSDurabilityPolicy.TRANSIENT_LOCAL. Falling back to QoSDurabilityPolicy.VOLATILE as it will connect to all publishers
+header:
+  stamp:
+    sec: 820
+    nanosec: 800042808
+  frame_id: ''
+name:
+- shoulder_pan_joint
+- shoulder_lift_joint
+- elbow_joint
+- wrist_1_joint
+- wrist_2_joint
+- wrist_3_joint
+- finger_joint
+- left_inner_knuckle_joint
+- right_inner_knuckle_joint
+- right_outer_knuckle_joint
+- left_inner_finger_joint
+- right_inner_finger_joint
+position:
+- -0.7572
+- -2.8091
+- 2.3533
+- -1.4577
+- -1.2548
+- 2.4286
+- 0.0
+- 0.0
+- 0.0
+- -0.0001
+- 0.0
+- 0.0001
+velocity:
+- -0.0103
+- 0.1046
+- -0.0069
+- -0.0178
+- 0.0089
+- -0.0048
+- 0.0017
+- -0.0079
+- -0.0044
+- 0.0043
+- 0.0067
+- 0.0087
+effort:
+- 0.0005
+- 20.135
+- -20.6349
+- -2.5723
+- 0.3975
+- -0.0056
+- -0.0154
+- 0.0082
+- 0.0082
+- 0.0153
+- -0.0012
+- -0.0013
+---
+donggil@donggil-XPS-15-9530:~/robot_description$ 
