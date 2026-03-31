@@ -1,0 +1,12 @@
+cd ~/robot_description
+colcon build --packages-select sfm_pipeline
+source install/setup.bash
+ros2 run sfm_pipeline colmap_converter
+
+cd ~/robot_description/sfm_dataset
+rm database.db*
+rm -rf sparse/*
+
+colmap feature_extractor --database_path database.db --image_path images --ImageReader.single_camera 1
+colmap exhaustive_matcher --database_path database.db
+colmap point_triangulator --database_path database.db --image_path images --input_path colmap_data --output_path sparse

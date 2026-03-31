@@ -23,6 +23,9 @@ setup(
     entry_points={
         'console_scripts': [
             'auto_scanner = sfm_pipeline.auto_scanner:main',
+            'colmap_converter = sfm_pipeline.colmap_converter:main',
+            'ai_depth_scanner = sfm_pipeline.ai_depth_scanner:main',
+            'gaussian_data_collector = sfm_pipeline.gaussian_data_collector:main',
         ],
     },
 )
