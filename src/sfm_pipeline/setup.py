@@ -26,6 +26,8 @@ setup(
             'colmap_converter = sfm_pipeline.colmap_converter:main',
             'ai_depth_scanner = sfm_pipeline.ai_depth_scanner:main',
             'gaussian_data_collector = sfm_pipeline.gaussian_data_collector:main',
+            'one_shot_grasp = sfm_pipeline.one_shot_grasp:main',
+            'grasp_executor = sfm_pipeline.grasp_executor:main',
         ],
     },
 )

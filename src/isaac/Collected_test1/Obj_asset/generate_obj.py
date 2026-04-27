@@ -38,7 +38,7 @@ def apply_perfect_physics_settings(prim):
     physx_collision_api.CreateRestOffsetAttr().Set(0.0)
 
 # Define the folder path containing your USD objects
-folder_path = "/home/donggil/robot_description/src/isaac/Collected_test1/Obj_asset/" 
+folder_path = "/home/dk/robot_description/src/isaac/Collected_test1/Obj_asset/" 
 
 valid_extensions = [".usd", ".usda", ".usdc"]
 object_files = [f for f in os.listdir(folder_path) if any(f.endswith(ext) for ext in valid_extensions)]
@@ -76,3 +76,4 @@ else:
     apply_perfect_physics_settings(prim)
     
     print(f"Spawned {chosen_file} at X:0.5, Y:0.0, Z:0.05 with Z-Rotation: {random_yaw:.2f} degrees")
+
