@@ -20,6 +20,8 @@ from std_msgs.msg import String
 from moveit_msgs.srv import GetPositionIK
 from tf2_ros import Buffer, TransformListener
 
+from scipy.spatial.transform import Rotation as R
+
 
 class GraspExecutor(Node):
     def __init__(self):
@@ -81,6 +83,21 @@ class GraspExecutor(Node):
         )
 
         # -----------------------------
+        # ROS parameters
+        # -----------------------------
+        self.declare_parameter("orientation_mode", "current_with_target_yaw")
+        self.declare_parameter("auto_execute_on_pose", False)
+        self.declare_parameter("avoid_collisions", False)
+
+        self.orientation_mode = self.get_parameter("orientation_mode").value
+        self.auto_execute_on_pose = bool(
+            self.get_parameter("auto_execute_on_pose").value
+        )
+        self.avoid_collisions = bool(
+            self.get_parameter("avoid_collisions").value
+        )
+
+        # -----------------------------
         # MoveIt / robot settings
         # -----------------------------
         self.group_name = 'ur_manipulator'
@@ -122,7 +139,7 @@ class GraspExecutor(Node):
         # -----------------------------
         self.tcp_offset_z = 0.15
 
-        # Positive = deeper. Keep 0.00 while physics is being debugged.
+        # Positive = deeper.
         self.grasp_depth_extra = 0.00
 
         self.pre_grasp_clearance = 0.12
@@ -152,13 +169,6 @@ class GraspExecutor(Node):
         self.require_velocity_settle = False
         self.joint_velocity_tolerance = 0.08
 
-        # -----------------------------
-        # IK / orientation settings
-        # -----------------------------
-        self.avoid_collisions = False
-        self.use_current_tool_orientation = True
-        self.auto_execute_on_pose = False
-
         self.latest_target_pose = None
         self.current_joint_state = None
         self.is_executing = False
@@ -167,9 +177,15 @@ class GraspExecutor(Node):
         self.pose_log_interval = 2.5
 
         self.get_logger().info("GraspExecutor ready.")
-        self.get_logger().info("Important: gripper now waits before lift.")
         self.get_logger().info(
-            "ros2 topic pub --once /grasp_execute_command std_msgs/msg/String \"{data: 'go'}\""
+            f"Orientation mode: {self.orientation_mode}"
+        )
+        self.get_logger().info(
+            f"Auto execute on pose: {self.auto_execute_on_pose}"
+        )
+        self.get_logger().info(
+            "Use: ros2 topic pub --once /grasp_execute_command "
+            "std_msgs/msg/String \"{data: 'go'}\""
         )
 
     # ---------------------------------------------------------
@@ -187,12 +203,22 @@ class GraspExecutor(Node):
         now = time.time()
         if now - self.last_logged_pose_time > self.pose_log_interval:
             self.last_logged_pose_time = now
+
+            yaw_deg = self.get_yaw_from_pose_msg(msg)
+
             self.get_logger().info(
                 f"Received target grasp pose: "
                 f"x={msg.pose.position.x:.3f}, "
                 f"y={msg.pose.position.y:.3f}, "
-                f"z={msg.pose.position.z:.3f}"
+                f"z={msg.pose.position.z:.3f}, "
+                f"yaw={yaw_deg:.1f} deg"
             )
+
+        if self.auto_execute_on_pose and not self.is_executing:
+            threading.Thread(
+                target=self.execute_grasp,
+                daemon=True
+            ).start()
 
     def command_callback(self, msg):
         command = msg.data.strip().lower()
@@ -220,9 +246,12 @@ class GraspExecutor(Node):
         elif command == "test_arm":
             self.test_arm_motion()
 
+        elif command == "status":
+            self.print_status()
+
         else:
             self.get_logger().warn(
-                f"Unknown command: {command}. Use go, open, close, or test_arm."
+                f"Unknown command: {command}. Use go, open, close, test_arm, or status."
             )
 
     # ---------------------------------------------------------
@@ -252,7 +281,7 @@ class GraspExecutor(Node):
             # 1. Pre-grasp
             pre_grasp = copy.deepcopy(target)
             pre_grasp.position.z += self.tcp_offset_z + self.pre_grasp_clearance
-            pre_grasp = self.apply_tool_orientation(pre_grasp)
+            pre_grasp = self.apply_grasp_orientation(pre_grasp)
 
             self.get_logger().info("1. Moving to pre-grasp")
             pre_grasp_joints = self.move_robot(
@@ -277,7 +306,7 @@ class GraspExecutor(Node):
             # 2. Move down to grasp
             grasp = copy.deepcopy(target)
             grasp.position.z += self.tcp_offset_z - self.grasp_depth_extra
-            grasp = self.apply_tool_orientation(grasp)
+            grasp = self.apply_grasp_orientation(grasp)
 
             self.get_logger().info(
                 f"2. Moving down to grasp "
@@ -312,7 +341,6 @@ class GraspExecutor(Node):
             self.get_logger().info("3. Closing gripper")
             self.control_gripper(close=True)
 
-            # Critical: wait before lifting.
             self.wait_until_gripper_motion_done(
                 target_position=self.gripper_close_position,
                 label="close"
@@ -352,12 +380,26 @@ class GraspExecutor(Node):
             self.is_executing = False
 
     # ---------------------------------------------------------
-    # Orientation
+    # Orientation handling
     # ---------------------------------------------------------
-    def apply_tool_orientation(self, pose):
-        if not self.use_current_tool_orientation:
+    def apply_grasp_orientation(self, pose):
+        mode = str(self.orientation_mode).lower().strip()
+
+        if mode == "target":
             return pose
 
+        if mode == "current":
+            return self.apply_current_tool_orientation(pose)
+
+        if mode == "current_with_target_yaw":
+            return self.apply_current_orientation_with_target_yaw(pose)
+
+        self.get_logger().warn(
+            f"Unknown orientation_mode '{self.orientation_mode}'. Using target orientation."
+        )
+        return pose
+
+    def apply_current_tool_orientation(self, pose):
         try:
             trans = self.tf_buffer.lookup_transform(
                 self.base_frame,
@@ -365,6 +407,7 @@ class GraspExecutor(Node):
                 rclpy.time.Time(),
                 timeout=RclpyDuration(seconds=0.5)
             )
+
             pose.orientation = trans.transform.rotation
 
         except Exception as e:
@@ -374,6 +417,79 @@ class GraspExecutor(Node):
             )
 
         return pose
+
+    def apply_current_orientation_with_target_yaw(self, pose):
+        try:
+            trans = self.tf_buffer.lookup_transform(
+                self.base_frame,
+                self.ik_link_name,
+                rclpy.time.Time(),
+                timeout=RclpyDuration(seconds=0.5)
+            )
+
+            current_q = trans.transform.rotation
+            current_rot = R.from_quat([
+                current_q.x,
+                current_q.y,
+                current_q.z,
+                current_q.w
+            ])
+
+            current_yaw = self.rotation_to_yaw(current_rot)
+
+            target_q = pose.orientation
+            target_rot = R.from_quat([
+                target_q.x,
+                target_q.y,
+                target_q.z,
+                target_q.w
+            ])
+
+            target_yaw = self.rotation_to_yaw(target_rot)
+
+            yaw_delta = self.normalize_angle(target_yaw - current_yaw)
+
+            desired_rot = R.from_euler("z", yaw_delta) * current_rot
+            desired_q = desired_rot.as_quat()
+
+            pose.orientation.x = float(desired_q[0])
+            pose.orientation.y = float(desired_q[1])
+            pose.orientation.z = float(desired_q[2])
+            pose.orientation.w = float(desired_q[3])
+
+            self.get_logger().info(
+                f"Applied target yaw while preserving tool attitude: "
+                f"current_yaw={math.degrees(current_yaw):.1f} deg, "
+                f"target_yaw={math.degrees(target_yaw):.1f} deg, "
+                f"delta={math.degrees(yaw_delta):.1f} deg"
+            )
+
+        except Exception as e:
+            self.get_logger().warn(
+                f"Could not apply current orientation with target yaw. "
+                f"Using input pose orientation. Error: {e}"
+            )
+
+        return pose
+
+    @staticmethod
+    def normalize_angle(angle):
+        return math.atan2(math.sin(angle), math.cos(angle))
+
+    @staticmethod
+    def rotation_to_yaw(rotation):
+        rot_mat = rotation.as_matrix()
+        yaw = math.atan2(rot_mat[1, 0], rot_mat[0, 0])
+        return float(yaw)
+
+    def get_yaw_from_pose_msg(self, msg):
+        try:
+            q = msg.pose.orientation
+            rot = R.from_quat([q.x, q.y, q.z, q.w])
+            yaw = self.rotation_to_yaw(rot)
+            return math.degrees(yaw)
+        except Exception:
+            return 0.0
 
     # ---------------------------------------------------------
     # IK + trajectory
@@ -600,8 +716,6 @@ class GraspExecutor(Node):
             if current_position is not None:
                 error = abs(current_position - target_position)
 
-                # For closing, contact may stop the gripper before reaching target.
-                # So we do not require exact target forever.
                 if label == "close":
                     if time.time() - start_time >= self.gripper_move_time_sec:
                         self.get_logger().info(
@@ -632,7 +746,6 @@ class GraspExecutor(Node):
                         f"target={target_position:.3f}, error={error:.3f}"
                     )
 
-            # Fallback: do not let sequence get stuck forever.
             if time.time() - start_time > self.gripper_wait_timeout:
                 self.get_logger().warn(
                     f"Timed out waiting for gripper {label}. Continuing."
@@ -678,7 +791,7 @@ class GraspExecutor(Node):
             )
 
     # ---------------------------------------------------------
-    # Test
+    # Test and status
     # ---------------------------------------------------------
     def test_arm_motion(self):
         self.get_logger().info("Sending simple test arm motion.")
@@ -696,6 +809,25 @@ class GraspExecutor(Node):
             test_pose,
             move_time_sec=self.default_arm_move_time
         )
+
+    def print_status(self):
+        self.get_logger().info("=== GraspExecutor status ===")
+        self.get_logger().info(f"orientation_mode: {self.orientation_mode}")
+        self.get_logger().info(f"auto_execute_on_pose: {self.auto_execute_on_pose}")
+        self.get_logger().info(f"avoid_collisions: {self.avoid_collisions}")
+        self.get_logger().info(f"is_executing: {self.is_executing}")
+
+        if self.latest_target_pose is None:
+            self.get_logger().info("latest_target_pose: None")
+        else:
+            pose = self.latest_target_pose.pose
+            self.get_logger().info(
+                f"latest_target_pose: "
+                f"x={pose.position.x:.3f}, "
+                f"y={pose.position.y:.3f}, "
+                f"z={pose.position.z:.3f}, "
+                f"yaw={self.get_yaw_from_pose_msg(self.latest_target_pose):.1f} deg"
+            )
 
 
 def main(args=None):

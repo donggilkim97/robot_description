@@ -1,5 +1,4 @@
 import os
-import sys
 
 import rclpy
 from rclpy.node import Node
@@ -17,11 +16,14 @@ import cv2
 import numpy as np
 import torch
 import open3d as o3d
-from PIL import Image as PILImage
 
 from tf2_ros import Buffer, TransformListener
 from scipy.spatial.transform import Rotation as R
 import sensor_msgs_py.point_cloud2 as pc2
+
+from sfm_pipeline.depth_models.factory import create_depth_model
+from sfm_pipeline.grasp_models.factory import create_grasp_model
+from sfm_pipeline.grasp_models.base import GraspContext
 
 
 class AutoGraspScanner(Node):
@@ -36,6 +38,9 @@ class AutoGraspScanner(Node):
         self.bridge = CvBridge()
 
         self.last_grasp_pose = None
+        self.last_rgb_image = None
+        self.last_depth_map = None
+        self.last_camera_transform = None
 
         self.image_sub = self.create_subscription(
             Image,
@@ -85,21 +90,14 @@ class AutoGraspScanner(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
+        # ROS parameters for model selection
+        self.declare_parameter("depth_model", "zoedepth")
+        self.declare_parameter("grasp_model", "pca")
+
+        self.depth_model_name = self.get_parameter("depth_model").value
+        self.grasp_model_name = self.get_parameter("grasp_model").value
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.get_logger().info(
-            f"Loading ZoeDepth model on [{self.device.type.upper()}]..."
-        )
-
-        self.model = torch.hub.load(
-            "isl-org/ZoeDepth",
-            "ZoeD_N",
-            pretrained=True
-        )
-
-        self.model.to(self.device)
-        self.model.eval()
-
-        self.get_logger().info("ZoeDepth loaded.")
 
         # Frames
         self.target_frame = "base_link"
@@ -161,6 +159,26 @@ class AutoGraspScanner(Node):
 
         # Grasp estimation
         self.grasp_z_offset = 0.035
+
+        # Create selected models
+        self.get_logger().info(
+            f"Selected depth model: {self.depth_model_name}"
+        )
+        self.get_logger().info(
+            f"Selected grasp model: {self.grasp_model_name}"
+        )
+
+        self.depth_model = create_depth_model(
+            model_name=self.depth_model_name,
+            device=self.device,
+            logger=self.get_logger()
+        )
+
+        self.grasp_model = create_grasp_model(
+            model_name=self.grasp_model_name,
+            logger=self.get_logger(),
+            z_offset=self.grasp_z_offset
+        )
 
         # UR joint names
         self.joint_names = [
@@ -244,9 +262,9 @@ class AutoGraspScanner(Node):
         )
 
         self.get_logger().info("AutoGraspScanner ready.")
-        self.get_logger().info("Use:")
         self.get_logger().info(
-            "ros2 topic pub --once /grasp_scan_command std_msgs/msg/String \"{data: 'auto_scan'}\""
+            "Use: ros2 topic pub --once /grasp_scan_command "
+            "std_msgs/msg/String \"{data: 'auto_scan'}\""
         )
         self.get_logger().info("Other commands: reset, publish, compute")
 
@@ -301,6 +319,11 @@ class AutoGraspScanner(Node):
         self.global_pcd = o3d.geometry.PointCloud()
         self.final_pcd = o3d.geometry.PointCloud()
 
+        self.last_grasp_pose = None
+        self.last_rgb_image = None
+        self.last_depth_map = None
+        self.last_camera_transform = None
+
         self.capture_remaining = 0
         self.is_capturing = False
         self.frame_counter = 0
@@ -323,6 +346,11 @@ class AutoGraspScanner(Node):
 
         self.global_pcd = o3d.geometry.PointCloud()
         self.final_pcd = o3d.geometry.PointCloud()
+
+        self.last_grasp_pose = None
+        self.last_rgb_image = None
+        self.last_depth_map = None
+        self.last_camera_transform = None
 
         self.current_waypoint_index = 0
         self.scan_active = True
@@ -474,16 +502,14 @@ class AutoGraspScanner(Node):
         if self.flip_image_horizontal:
             cv_image = cv2.flip(cv_image, 1)
 
-        pil_img = PILImage.fromarray(cv_image)
-
         try:
-            with torch.no_grad():
-                depth_map = self.model.infer_pil(pil_img)
-
+            depth_map = self.depth_model.predict(cv_image)
             depth_map = np.asarray(depth_map).astype(np.float32)
 
         except Exception as e:
-            self.get_logger().error(f"ZoeDepth failed: {e}")
+            self.get_logger().error(
+                f"Depth model [{self.depth_model_name}] failed: {e}"
+            )
             return None
 
         try:
@@ -500,6 +526,11 @@ class AutoGraspScanner(Node):
             return None
 
         depth_map = self.scale_depth_to_camera_height(depth_map, trans)
+
+        # Store latest frame data for future grasp models such as GGCNN.
+        self.last_rgb_image = cv_image.copy()
+        self.last_depth_map = depth_map.copy()
+        self.last_camera_transform = trans
 
         points_base, colors = self.depth_rgb_to_base_points(
             depth_map,
@@ -637,7 +668,9 @@ class AutoGraspScanner(Node):
         )
 
         if len(pcd.points) < 50:
-            self.get_logger().warn("Point cloud too small after statistical outlier removal.")
+            self.get_logger().warn(
+                "Point cloud too small after statistical outlier removal."
+            )
             return None
 
         # Estimate dominant plane. Usually this is table/floor.
@@ -687,8 +720,12 @@ class AutoGraspScanner(Node):
             return None
 
         object_pcd = o3d.geometry.PointCloud()
-        object_pcd.points = o3d.utility.Vector3dVector(object_points.astype(np.float64))
-        object_pcd.colors = o3d.utility.Vector3dVector(object_colors.astype(np.float64))
+        object_pcd.points = o3d.utility.Vector3dVector(
+            object_points.astype(np.float64)
+        )
+        object_pcd.colors = o3d.utility.Vector3dVector(
+            object_colors.astype(np.float64)
+        )
 
         # DBSCAN clustering removes remaining fragments.
         try:
@@ -706,7 +743,9 @@ class AutoGraspScanner(Node):
         valid_labels = labels[labels >= 0]
 
         if len(valid_labels) == 0:
-            self.get_logger().warn("DBSCAN found no valid cluster. Returning plane-filtered cloud.")
+            self.get_logger().warn(
+                "DBSCAN found no valid cluster. Returning plane-filtered cloud."
+            )
             return object_pcd
 
         unique_labels, counts = np.unique(valid_labels, return_counts=True)
@@ -724,8 +763,12 @@ class AutoGraspScanner(Node):
             return object_pcd
 
         cluster_pcd = o3d.geometry.PointCloud()
-        cluster_pcd.points = o3d.utility.Vector3dVector(cluster_points.astype(np.float64))
-        cluster_pcd.colors = o3d.utility.Vector3dVector(cluster_colors.astype(np.float64))
+        cluster_pcd.points = o3d.utility.Vector3dVector(
+            cluster_points.astype(np.float64)
+        )
+        cluster_pcd.colors = o3d.utility.Vector3dVector(
+            cluster_colors.astype(np.float64)
+        )
 
         self.get_logger().info(
             f"Plane removed. Object cluster points: {len(cluster_points)}"
@@ -750,29 +793,32 @@ class AutoGraspScanner(Node):
             self.get_logger().warn("Failed to extract clean object point cloud.")
             return
 
-        object_points = np.asarray(object_pcd.points)
+        context = GraspContext(
+            rgb_image=self.last_rgb_image,
+            depth_map=self.last_depth_map,
+            object_pcd=object_pcd,
+            camera_intrinsics={
+                "fx": self.fx,
+                "fy": self.fy,
+                "cx": self.cx,
+                "cy": self.cy,
+                "width": self.image_width,
+                "height": self.image_height,
+            },
+            transform_base_from_camera=self.last_camera_transform,
+            frame_id=self.target_frame,
+            stamp=self.get_clock().now().to_msg(),
+        )
 
-        grasp_x = float(np.median(object_points[:, 0]))
-        grasp_y = float(np.median(object_points[:, 1]))
-        top_z = float(np.percentile(object_points[:, 2], 95))
-        grasp_z = top_z + self.grasp_z_offset
+        try:
+            prediction = self.grasp_model.predict(context)
+        except Exception as e:
+            self.get_logger().error(
+                f"Grasp model [{self.grasp_model_name}] failed: {e}"
+            )
+            return
 
-        yaw = self.estimate_yaw_from_pca(object_points)
-
-        pose = PoseStamped()
-        pose.header.stamp = self.get_clock().now().to_msg()
-        pose.header.frame_id = self.target_frame
-
-        pose.pose.position.x = grasp_x
-        pose.pose.position.y = grasp_y
-        pose.pose.position.z = grasp_z
-
-        quat = R.from_euler('z', yaw).as_quat()
-
-        pose.pose.orientation.x = float(quat[0])
-        pose.pose.orientation.y = float(quat[1])
-        pose.pose.orientation.z = float(quat[2])
-        pose.pose.orientation.w = float(quat[3])
+        pose = prediction.pose
 
         self.last_grasp_pose = pose
         self.grasp_pub.publish(pose)
@@ -780,10 +826,23 @@ class AutoGraspScanner(Node):
 
         self.get_logger().info("Published /target_grasp_pose and /target_grasp_marker")
         self.get_logger().info(
-            f"Position: x={grasp_x:.3f}, y={grasp_y:.3f}, z={grasp_z:.3f}"
+            f"Position: x={pose.pose.position.x:.3f}, "
+            f"y={pose.pose.position.y:.3f}, "
+            f"z={pose.pose.position.z:.3f}"
         )
+
+        if "yaw_deg" in prediction.debug:
+            self.get_logger().info(
+                f"Yaw: {prediction.debug['yaw_deg']:.1f} deg"
+            )
+
+        if prediction.width is not None:
+            self.get_logger().info(
+                f"Predicted gripper width: {prediction.width:.3f} m"
+            )
+
         self.get_logger().info(
-            f"Yaw: {np.degrees(yaw):.1f} deg"
+            f"Grasp score: {prediction.score:.3f}"
         )
 
         # Keep cleaned object cloud for RViz continuous publishing.
@@ -798,21 +857,6 @@ class AutoGraspScanner(Node):
         self.get_logger().info(f"Saved cleaned object cloud to: {save_path}")
 
         self.publish_pointcloud(self.final_pcd)
-
-    def estimate_yaw_from_pca(self, points):
-        xy = points[:, :2]
-        xy = xy - np.mean(xy, axis=0)
-
-        if len(xy) < 3:
-            return 0.0
-
-        cov = np.cov(xy.T)
-        eig_vals, eig_vecs = np.linalg.eig(cov)
-
-        main_axis = eig_vecs[:, np.argmax(eig_vals)]
-        yaw = np.arctan2(main_axis[1], main_axis[0])
-
-        return float(yaw)
 
     def publish_grasp_marker(self, pose):
         marker = Marker()
