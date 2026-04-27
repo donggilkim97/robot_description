@@ -1,6 +1,7 @@
 import copy
 import threading
 import time
+import math
 
 import rclpy
 from rclpy.node import Node
@@ -79,7 +80,9 @@ class GraspExecutor(Node):
             self
         )
 
+        # -----------------------------
         # MoveIt / robot settings
+        # -----------------------------
         self.group_name = 'ur_manipulator'
         self.ik_link_name = 'tool0'
         self.base_frame = 'base_link'
@@ -93,72 +96,92 @@ class GraspExecutor(Node):
             'wrist_3_joint'
         ]
 
-        # If gripper does not move, check:
-        # ros2 control list_joints
         self.gripper_joint_names = ['finger_joint']
 
+        # -----------------------------
+        # Gripper settings
+        # -----------------------------
         self.gripper_open_position = 0.0
-        self.gripper_close_position = 0.70
 
-        # TCP tuning.
-        # target_grasp_pose is object grasp point.
-        # tool0 needs to stay above that point by TCP length.
+        # Do not over-close at first. 0.70 is too aggressive for contact simulation.
+        self.gripper_close_position = 0.35
+
+        # Slower close gives PhysX time to resolve contact.
+        self.gripper_move_time_sec = 2.0
+
+        # Extra wait after gripper command before lifting.
+        self.post_grasp_hold_time = 2.0
+
+        # Gripper wait settings
+        self.gripper_wait_timeout = 8.0
+        self.gripper_position_tolerance = 0.03
+        self.gripper_required_stable_time = 0.7
+
+        # -----------------------------
+        # TCP / grasp depth settings
+        # -----------------------------
         self.tcp_offset_z = 0.15
 
-        # Positive value makes the tool go deeper.
-        # Start with 0.02 m. Try 0.03 or 0.04 if still too shallow.
-        self.grasp_depth_extra = 0.035
+        # Positive = deeper. Keep 0.00 while physics is being debugged.
+        self.grasp_depth_extra = 0.00
 
         self.pre_grasp_clearance = 0.12
         self.lift_distance = 0.20
 
-        self.arm_move_time_sec = 3
-        self.gripper_move_time_sec = 1
+        # -----------------------------
+        # Arm motion timing
+        # -----------------------------
+        self.arm_move_time_pregrasp = 4.0
+        self.arm_move_time_grasp = 5.0
+        self.arm_move_time_lift = 4.0
+        self.default_arm_move_time = 4.0
 
-        # Wait settings
-        self.joint_goal_tolerance = 0.025
-        self.joint_wait_timeout = 8.0
+        # -----------------------------
+        # Arm wait settings
+        # -----------------------------
+        self.joint_goal_tolerance = 0.035
+        self.required_stable_time = 0.6
+
+        self.min_wait_timeout = 60.0
+        self.wait_timeout_scale = 15.0
+
         self.settle_after_motion = 0.5
-        self.settle_before_gripper = 0.8
+        self.settle_before_gripper = 1.5
 
-        # First test safer with collision checking disabled.
+        # Velocity check disabled because Isaac velocity can be noisy on slow machines.
+        self.require_velocity_settle = False
+        self.joint_velocity_tolerance = 0.08
+
+        # -----------------------------
+        # IK / orientation settings
+        # -----------------------------
         self.avoid_collisions = False
-
-        # Use current tool0 orientation for top-down grasp.
         self.use_current_tool_orientation = True
-
-        # Manual execution is safer.
         self.auto_execute_on_pose = False
 
         self.latest_target_pose = None
         self.current_joint_state = None
         self.is_executing = False
 
-        # Reduce repeated pose logs
         self.last_logged_pose_time = 0.0
-        self.pose_log_interval = 2.0
+        self.pose_log_interval = 2.5
 
         self.get_logger().info("GraspExecutor ready.")
-        self.get_logger().info("use_sim_time is enabled.")
-        self.get_logger().info("Waiting for /target_grasp_pose...")
-        self.get_logger().info("Manual commands:")
+        self.get_logger().info("Important: gripper now waits before lift.")
         self.get_logger().info(
             "ros2 topic pub --once /grasp_execute_command std_msgs/msg/String \"{data: 'go'}\""
         )
-        self.get_logger().info(
-            "ros2 topic pub --once /grasp_execute_command std_msgs/msg/String \"{data: 'open'}\""
-        )
-        self.get_logger().info(
-            "ros2 topic pub --once /grasp_execute_command std_msgs/msg/String \"{data: 'close'}\""
-        )
-        self.get_logger().info(
-            "ros2 topic pub --once /grasp_execute_command std_msgs/msg/String \"{data: 'test_arm'}\""
-        )
 
+    # ---------------------------------------------------------
+    # Callbacks
+    # ---------------------------------------------------------
     def joint_state_callback(self, msg):
         self.current_joint_state = msg
 
     def pose_callback(self, msg):
+        if self.is_executing:
+            return
+
         self.latest_target_pose = copy.deepcopy(msg)
 
         now = time.time()
@@ -170,13 +193,6 @@ class GraspExecutor(Node):
                 f"y={msg.pose.position.y:.3f}, "
                 f"z={msg.pose.position.z:.3f}"
             )
-
-        if self.auto_execute_on_pose and not self.is_executing:
-            thread = threading.Thread(
-                target=self.execute_grasp,
-                daemon=True
-            )
-            thread.start()
 
     def command_callback(self, msg):
         command = msg.data.strip().lower()
@@ -190,11 +206,10 @@ class GraspExecutor(Node):
                 self.get_logger().warn("Already executing grasp sequence.")
                 return
 
-            thread = threading.Thread(
+            threading.Thread(
                 target=self.execute_grasp,
                 daemon=True
-            )
-            thread.start()
+            ).start()
 
         elif command == "open":
             self.control_gripper(close=False)
@@ -210,6 +225,9 @@ class GraspExecutor(Node):
                 f"Unknown command: {command}. Use go, open, close, or test_arm."
             )
 
+    # ---------------------------------------------------------
+    # Main grasp sequence
+    # ---------------------------------------------------------
     def execute_grasp(self):
         if self.latest_target_pose is None:
             self.get_logger().warn("No target pose available.")
@@ -226,7 +244,10 @@ class GraspExecutor(Node):
             # 0. Open gripper
             self.get_logger().info("0. Opening gripper")
             self.control_gripper(close=False)
-            time.sleep(self.gripper_move_time_sec + 0.5)
+            self.wait_until_gripper_motion_done(
+                target_position=self.gripper_open_position,
+                label="open"
+            )
 
             # 1. Pre-grasp
             pre_grasp = copy.deepcopy(target)
@@ -234,20 +255,27 @@ class GraspExecutor(Node):
             pre_grasp = self.apply_tool_orientation(pre_grasp)
 
             self.get_logger().info("1. Moving to pre-grasp")
-            pre_grasp_joints = self.move_robot(pre_grasp)
+            pre_grasp_joints = self.move_robot(
+                pre_grasp,
+                move_time_sec=self.arm_move_time_pregrasp
+            )
 
             if pre_grasp_joints is None:
                 self.get_logger().error("Failed at pre-grasp. Aborting.")
                 return
 
-            self.wait_until_joint_goal_reached(pre_grasp_joints)
+            if not self.wait_until_arm_reached(
+                pre_grasp_joints,
+                move_time_sec=self.arm_move_time_pregrasp,
+                label="pre-grasp"
+            ):
+                self.get_logger().error("Arm did not reach pre-grasp. Aborting.")
+                return
+
             time.sleep(self.settle_after_motion)
 
             # 2. Move down to grasp
             grasp = copy.deepcopy(target)
-
-            # Deeper grasp:
-            # z = object grasp z + TCP length - extra downward depth
             grasp.position.z += self.tcp_offset_z - self.grasp_depth_extra
             grasp = self.apply_tool_orientation(grasp)
 
@@ -257,37 +285,63 @@ class GraspExecutor(Node):
                 f"depth_extra={self.grasp_depth_extra:.3f})"
             )
 
-            grasp_joints = self.move_robot(grasp)
+            grasp_joints = self.move_robot(
+                grasp,
+                move_time_sec=self.arm_move_time_grasp
+            )
 
             if grasp_joints is None:
                 self.get_logger().error("Failed at grasp pose. Aborting.")
                 return
 
-            self.wait_until_joint_goal_reached(grasp_joints)
+            if not self.wait_until_arm_reached(
+                grasp_joints,
+                move_time_sec=self.arm_move_time_grasp,
+                label="grasp"
+            ):
+                self.get_logger().error("Arm did not reach grasp pose. Aborting.")
+                return
 
             self.get_logger().info(
-                f"Waiting {self.settle_before_gripper:.1f}s before closing gripper..."
+                f"Arm reached grasp pose. Waiting "
+                f"{self.settle_before_gripper:.1f}s before closing gripper..."
             )
             time.sleep(self.settle_before_gripper)
 
-            # 3. Close gripper only after robot reached target
+            # 3. Close gripper
             self.get_logger().info("3. Closing gripper")
             self.control_gripper(close=True)
-            time.sleep(self.gripper_move_time_sec + 1.0)
 
-            # 4. Lift
+            # Critical: wait before lifting.
+            self.wait_until_gripper_motion_done(
+                target_position=self.gripper_close_position,
+                label="close"
+            )
+
+            self.get_logger().info(
+                f"Extra post-grasp hold: {self.post_grasp_hold_time:.1f}s"
+            )
+            time.sleep(self.post_grasp_hold_time)
+
+            # 4. Lift only after gripper has had time to close/contact.
             lift = copy.deepcopy(grasp)
             lift.position.z += self.lift_distance
 
             self.get_logger().info("4. Lifting object")
-            lift_joints = self.move_robot(lift)
+            lift_joints = self.move_robot(
+                lift,
+                move_time_sec=self.arm_move_time_lift
+            )
 
             if lift_joints is None:
                 self.get_logger().error("Failed at lift pose.")
                 return
 
-            self.wait_until_joint_goal_reached(lift_joints)
-            time.sleep(self.settle_after_motion)
+            self.wait_until_arm_reached(
+                lift_joints,
+                move_time_sec=self.arm_move_time_lift,
+                label="lift"
+            )
 
             self.get_logger().info("=== Grasp sequence completed ===")
 
@@ -297,6 +351,9 @@ class GraspExecutor(Node):
         finally:
             self.is_executing = False
 
+    # ---------------------------------------------------------
+    # Orientation
+    # ---------------------------------------------------------
     def apply_tool_orientation(self, pose):
         if not self.use_current_tool_orientation:
             return pose
@@ -308,7 +365,6 @@ class GraspExecutor(Node):
                 rclpy.time.Time(),
                 timeout=RclpyDuration(seconds=0.5)
             )
-
             pose.orientation = trans.transform.rotation
 
         except Exception as e:
@@ -319,25 +375,24 @@ class GraspExecutor(Node):
 
         return pose
 
-    def move_robot(self, target_pose):
+    # ---------------------------------------------------------
+    # IK + trajectory
+    # ---------------------------------------------------------
+    def move_robot(self, target_pose, move_time_sec=None):
+        if move_time_sec is None:
+            move_time_sec = self.default_arm_move_time
+
         if not self.ik_client.wait_for_service(timeout_sec=3.0):
             self.get_logger().error("/compute_ik service is not available.")
             return None
 
         req = GetPositionIK.Request()
-
         req.ik_request.group_name = self.group_name
         req.ik_request.ik_link_name = self.ik_link_name
         req.ik_request.avoid_collisions = self.avoid_collisions
 
         req.ik_request.pose_stamped.header.frame_id = self.base_frame
-
-        # Use zero stamp to avoid sim-time / wall-time mismatch.
-        req.ik_request.pose_stamped.header.stamp = BuiltinTime(
-            sec=0,
-            nanosec=0
-        )
-
+        req.ik_request.pose_stamped.header.stamp = BuiltinTime(sec=0, nanosec=0)
         req.ik_request.pose_stamped.pose = target_pose
         req.ik_request.timeout = BuiltinDuration(sec=2, nanosec=0)
 
@@ -348,7 +403,8 @@ class GraspExecutor(Node):
             f"Requesting IK: "
             f"x={target_pose.position.x:.3f}, "
             f"y={target_pose.position.y:.3f}, "
-            f"z={target_pose.position.z:.3f}"
+            f"z={target_pose.position.z:.3f}, "
+            f"move_time={move_time_sec:.1f}s"
         )
 
         future = self.ik_client.call_async(req)
@@ -395,25 +451,28 @@ class GraspExecutor(Node):
 
             ordered_positions.append(float(joint_position_map[joint_name]))
 
-        self.publish_arm_trajectory(ordered_positions)
+        self.publish_arm_trajectory(
+            ordered_positions,
+            move_time_sec=move_time_sec
+        )
 
         return ordered_positions
 
-    def publish_arm_trajectory(self, joint_positions):
+    def publish_arm_trajectory(self, joint_positions, move_time_sec=None):
+        if move_time_sec is None:
+            move_time_sec = self.default_arm_move_time
+
         msg = JointTrajectory()
-
-        # Zero stamp means "start immediately".
         msg.header.stamp = BuiltinTime(sec=0, nanosec=0)
-
         msg.joint_names = self.arm_joint_names
 
         point = JointTrajectoryPoint()
         point.positions = [float(x) for x in joint_positions]
-        point.time_from_start = BuiltinDuration(
-            sec=self.arm_move_time_sec,
-            nanosec=0
-        )
 
+        sec = int(math.floor(move_time_sec))
+        nanosec = int((move_time_sec - sec) * 1e9)
+
+        point.time_from_start = BuiltinDuration(sec=sec, nanosec=nanosec)
         msg.points.append(point)
 
         self.arm_pub.publish(msg)
@@ -423,7 +482,29 @@ class GraspExecutor(Node):
             + ", ".join([f"{p:.3f}" for p in joint_positions])
         )
 
-    def get_current_arm_positions(self):
+    # ---------------------------------------------------------
+    # Joint-state checking
+    # ---------------------------------------------------------
+    def angle_error(self, current, target):
+        return abs(math.atan2(
+            math.sin(current - target),
+            math.cos(current - target)
+        ))
+
+    def get_current_joint_position(self, joint_name):
+        if self.current_joint_state is None:
+            return None
+
+        for name, pos in zip(
+            self.current_joint_state.name,
+            self.current_joint_state.position
+        ):
+            if name == joint_name:
+                return float(pos)
+
+        return None
+
+    def get_current_arm_state(self):
         if self.current_joint_state is None:
             return None
 
@@ -435,54 +516,139 @@ class GraspExecutor(Node):
             )
         }
 
-        current_positions = []
+        positions = []
 
         for joint_name in self.arm_joint_names:
             if joint_name not in name_to_pos:
                 return None
 
-            current_positions.append(float(name_to_pos[joint_name]))
+            positions.append(float(name_to_pos[joint_name]))
 
-        return current_positions
+        return positions
 
-    def wait_until_joint_goal_reached(self, target_positions):
-        self.get_logger().info("Waiting until arm reaches target joint positions...")
+    def wait_until_arm_reached(self, target_positions, move_time_sec, label="target"):
+        timeout_sec = max(
+            self.min_wait_timeout,
+            move_time_sec * self.wait_timeout_scale
+        )
+
+        self.get_logger().info(
+            f"Waiting for arm to reach {label}. "
+            f"timeout={timeout_sec:.1f}s, tolerance={self.joint_goal_tolerance:.3f} rad"
+        )
 
         start_time = time.time()
+        stable_start_time = None
+        last_report_time = 0.0
 
         while rclpy.ok():
-            current_positions = self.get_current_arm_positions()
+            current_positions = self.get_current_arm_state()
 
             if current_positions is not None:
                 errors = [
-                    abs(c - t)
+                    self.angle_error(c, t)
                     for c, t in zip(current_positions, target_positions)
                 ]
 
                 max_error = max(errors)
+                position_ok = max_error < self.joint_goal_tolerance
 
-                if max_error < self.joint_goal_tolerance:
+                if position_ok:
+                    if stable_start_time is None:
+                        stable_start_time = time.time()
+
+                    if time.time() - stable_start_time >= self.required_stable_time:
+                        self.get_logger().info(
+                            f"Arm reached {label}. Max error={max_error:.4f} rad"
+                        )
+                        return True
+                else:
+                    stable_start_time = None
+
+                now = time.time()
+                if now - last_report_time > 2.0:
+                    last_report_time = now
                     self.get_logger().info(
-                        f"Arm reached target. Max joint error: {max_error:.4f} rad"
+                        f"Waiting for {label}... max_error={max_error:.4f} rad"
                     )
-                    return True
 
-            elapsed = time.time() - start_time
-
-            if elapsed > self.joint_wait_timeout:
+            if time.time() - start_time > timeout_sec:
                 self.get_logger().warn(
-                    "Timed out waiting for arm target. Continuing anyway."
+                    f"Timed out waiting for arm to reach {label}."
                 )
                 return False
 
             time.sleep(0.05)
 
+        return False
+
+    def wait_until_gripper_motion_done(self, target_position, label="gripper"):
+        joint_name = self.gripper_joint_names[0]
+
+        self.get_logger().info(
+            f"Waiting for gripper {label}. "
+            f"target={target_position:.3f}, timeout={self.gripper_wait_timeout:.1f}s"
+        )
+
+        start_time = time.time()
+        stable_start_time = None
+        last_report_time = 0.0
+
+        while rclpy.ok():
+            current_position = self.get_current_joint_position(joint_name)
+
+            if current_position is not None:
+                error = abs(current_position - target_position)
+
+                # For closing, contact may stop the gripper before reaching target.
+                # So we do not require exact target forever.
+                if label == "close":
+                    if time.time() - start_time >= self.gripper_move_time_sec:
+                        self.get_logger().info(
+                            f"Gripper close command duration elapsed. "
+                            f"current={current_position:.3f}, target={target_position:.3f}"
+                        )
+                        return True
+
+                if error < self.gripper_position_tolerance:
+                    if stable_start_time is None:
+                        stable_start_time = time.time()
+
+                    if time.time() - stable_start_time >= self.gripper_required_stable_time:
+                        self.get_logger().info(
+                            f"Gripper {label} reached. "
+                            f"current={current_position:.3f}, target={target_position:.3f}"
+                        )
+                        return True
+                else:
+                    stable_start_time = None
+
+                now = time.time()
+                if now - last_report_time > 1.0:
+                    last_report_time = now
+                    self.get_logger().info(
+                        f"Waiting gripper {label}... "
+                        f"current={current_position:.3f}, "
+                        f"target={target_position:.3f}, error={error:.3f}"
+                    )
+
+            # Fallback: do not let sequence get stuck forever.
+            if time.time() - start_time > self.gripper_wait_timeout:
+                self.get_logger().warn(
+                    f"Timed out waiting for gripper {label}. Continuing."
+                )
+                return False
+
+            time.sleep(0.05)
+
+        return False
+
+    # ---------------------------------------------------------
+    # Gripper
+    # ---------------------------------------------------------
     def control_gripper(self, close):
         msg = JointTrajectory()
-
-        # Zero stamp means execute immediately.
         msg.header.stamp = BuiltinTime(sec=0, nanosec=0)
-
         msg.joint_names = self.gripper_joint_names
 
         point = JointTrajectoryPoint()
@@ -493,20 +659,27 @@ class GraspExecutor(Node):
             target = self.gripper_open_position
 
         point.positions = [float(target)]
-        point.time_from_start = BuiltinDuration(
-            sec=self.gripper_move_time_sec,
-            nanosec=0
-        )
 
+        sec = int(math.floor(self.gripper_move_time_sec))
+        nanosec = int((self.gripper_move_time_sec - sec) * 1e9)
+
+        point.time_from_start = BuiltinDuration(sec=sec, nanosec=nanosec)
         msg.points.append(point)
 
         self.gripper_pub.publish(msg)
 
         if close:
-            self.get_logger().info(f"Gripper close command: {target:.3f}")
+            self.get_logger().info(
+                f"Gripper close command: {target:.3f}, time={self.gripper_move_time_sec:.1f}s"
+            )
         else:
-            self.get_logger().info(f"Gripper open command: {target:.3f}")
+            self.get_logger().info(
+                f"Gripper open command: {target:.3f}, time={self.gripper_move_time_sec:.1f}s"
+            )
 
+    # ---------------------------------------------------------
+    # Test
+    # ---------------------------------------------------------
     def test_arm_motion(self):
         self.get_logger().info("Sending simple test arm motion.")
 
@@ -519,7 +692,10 @@ class GraspExecutor(Node):
             2.9206
         ]
 
-        self.publish_arm_trajectory(test_pose)
+        self.publish_arm_trajectory(
+            test_pose,
+            move_time_sec=self.default_arm_move_time
+        )
 
 
 def main(args=None):
