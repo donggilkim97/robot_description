@@ -90,20 +90,111 @@ class AutoGraspScanner(Node):
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
+        # -----------------------------
         # ROS parameters for model selection
+        # -----------------------------
         self.declare_parameter("depth_model", "zoedepth")
         self.declare_parameter("grasp_model", "pca")
+
+        # Depth Anything V2 parameters
+        self.declare_parameter("depth_anything_checkpoint", "")
+        self.declare_parameter("depth_anything_encoder", "vitb")
+        self.declare_parameter("depth_anything_max_depth", 20.0)
+
+        # Depth Pro parameters
+        self.declare_parameter("depth_pro_input_size", 384)
+        self.declare_parameter("depth_pro_force_cpu", False)
+
+        # Image-space vertical crop before point cloud generation
+        self.declare_parameter("image_ignore_top_ratio_y", 0.12)
+        self.declare_parameter("image_keep_ratio_y", 0.82)
+
+        # Debug point cloud saving
+        self.declare_parameter("save_debug_pcd", True)
+        self.declare_parameter(
+            "debug_pcd_dir",
+            os.path.expanduser("~/robot_description/sfm_dataset/debug_pcd")
+        )
+
+        # Point cloud sampling parameters
+        self.declare_parameter("pixel_step", 4)
+        self.declare_parameter("frame_voxel_size", 0.010)
+        self.declare_parameter("final_voxel_size", 0.006)
+
+        # Plane removal parameters
+        self.declare_parameter("enable_plane_removal", False)
+        self.declare_parameter("plane_distance_threshold", 0.020)
+        self.declare_parameter("object_above_plane_threshold", 0.006)
+        self.declare_parameter("plane_min_inlier_ratio", 0.18)
+        self.declare_parameter("plane_min_normal_z", 0.75)
+
+        # Sparse noise filtering parameters
+        self.declare_parameter("enable_radius_outlier_removal", True)
+        self.declare_parameter("radius_outlier_nb_points", 3)
+        self.declare_parameter("radius_outlier_radius", 0.045)
+
+        self.declare_parameter("enable_statistical_outlier_removal", True)
+        self.declare_parameter("outlier_nb_neighbors", 12)
+        self.declare_parameter("outlier_std_ratio", 3.0)
+
+        # DBSCAN parameters
+        self.declare_parameter("dbscan_eps", 0.065)
+        self.declare_parameter("dbscan_min_points", 8)
+
+        # Cluster merging parameters
+        self.declare_parameter("keep_nearby_clusters", True)
+        self.declare_parameter("nearby_cluster_xy_radius", 0.140)
+        self.declare_parameter("nearby_cluster_z_radius", 0.100)
+        self.declare_parameter("min_cluster_size_to_keep", 15)
 
         self.depth_model_name = self.get_parameter("depth_model").value
         self.grasp_model_name = self.get_parameter("grasp_model").value
 
+        self.depth_anything_checkpoint = self.get_parameter(
+            "depth_anything_checkpoint"
+        ).value
+
+        self.depth_anything_encoder = self.get_parameter(
+            "depth_anything_encoder"
+        ).value
+
+        self.depth_anything_max_depth = float(
+            self.get_parameter("depth_anything_max_depth").value
+        )
+
+        self.depth_pro_input_size = int(
+            self.get_parameter("depth_pro_input_size").value
+        )
+
+        self.depth_pro_force_cpu = bool(
+            self.get_parameter("depth_pro_force_cpu").value
+        )
+
+        self.image_ignore_top_ratio_y = float(
+            self.get_parameter("image_ignore_top_ratio_y").value
+        )
+
+        self.image_keep_ratio_y = float(
+            self.get_parameter("image_keep_ratio_y").value
+        )
+
+        self.save_debug_pcd = bool(
+            self.get_parameter("save_debug_pcd").value
+        )
+
+        self.debug_pcd_dir = self.get_parameter("debug_pcd_dir").value
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+        # -----------------------------
         # Frames
+        # -----------------------------
         self.target_frame = "base_link"
         self.camera_frame = "camera_link"
 
+        # -----------------------------
         # Camera intrinsics
+        # -----------------------------
         self.fx = 0.0
         self.fy = 0.0
         self.cx = 0.0
@@ -112,13 +203,11 @@ class AutoGraspScanner(Node):
         self.image_height = 0
         self.camera_info_received = False
 
-        # Current working image correction
+        # -----------------------------
+        # Image correction
+        # -----------------------------
         self.flip_image_vertical = True
         self.flip_image_horizontal = False
-
-        # Crop RGB/depth bottom region to remove gripper/robot body in camera view.
-        # 0.82 means keep top 82% and ignore bottom 18%.
-        self.image_keep_ratio_y = 0.82
 
         # Current working axis mapping:
         # X_link = depth
@@ -126,23 +215,36 @@ class AutoGraspScanner(Node):
         # Z_link = -y_opt
         self.use_positive_x_opt = True
 
+        # -----------------------------
         # Point cloud storage
+        # -----------------------------
         self.global_pcd = o3d.geometry.PointCloud()
         self.final_pcd = o3d.geometry.PointCloud()
 
+        # -----------------------------
         # Capture settings
+        # -----------------------------
         self.frames_per_view = 10
         self.capture_remaining = 0
         self.is_capturing = False
         self.frame_counter = 0
         self.process_every_n_frames = 2
 
+        # -----------------------------
         # Point cloud settings
-        self.pixel_step = 5
-        self.frame_voxel_size = 0.010
-        self.final_voxel_size = 0.008
+        # -----------------------------
+        self.pixel_step = int(self.get_parameter("pixel_step").value)
+        self.frame_voxel_size = float(
+            self.get_parameter("frame_voxel_size").value
+        )
+        self.final_voxel_size = float(
+            self.get_parameter("final_voxel_size").value
+        )
 
+        # -----------------------------
         # Workspace filter in base_link
+        # These are intentionally kept broad.
+        # -----------------------------
         self.min_base_z = 0.005
         self.max_base_z = 0.400
 
@@ -151,16 +253,73 @@ class AutoGraspScanner(Node):
         self.workspace_y_min = -0.50
         self.workspace_y_max = 0.50
 
-        # Plane/object extraction settings
-        self.plane_distance_threshold = 0.012
-        self.object_above_plane_threshold = 0.018
-        self.dbscan_eps = 0.035
-        self.dbscan_min_points = 20
+        # -----------------------------
+        # Cleaning settings
+        # -----------------------------
+        self.enable_plane_removal = bool(
+            self.get_parameter("enable_plane_removal").value
+        )
+        self.plane_distance_threshold = float(
+            self.get_parameter("plane_distance_threshold").value
+        )
+        self.object_above_plane_threshold = float(
+            self.get_parameter("object_above_plane_threshold").value
+        )
+        self.plane_min_inlier_ratio = float(
+            self.get_parameter("plane_min_inlier_ratio").value
+        )
+        self.plane_min_normal_z = float(
+            self.get_parameter("plane_min_normal_z").value
+        )
 
+        self.enable_radius_outlier_removal = bool(
+            self.get_parameter("enable_radius_outlier_removal").value
+        )
+        self.radius_outlier_nb_points = int(
+            self.get_parameter("radius_outlier_nb_points").value
+        )
+        self.radius_outlier_radius = float(
+            self.get_parameter("radius_outlier_radius").value
+        )
+
+        self.enable_statistical_outlier_removal = bool(
+            self.get_parameter("enable_statistical_outlier_removal").value
+        )
+        self.outlier_nb_neighbors = int(
+            self.get_parameter("outlier_nb_neighbors").value
+        )
+        self.outlier_std_ratio = float(
+            self.get_parameter("outlier_std_ratio").value
+        )
+
+        self.dbscan_eps = float(
+            self.get_parameter("dbscan_eps").value
+        )
+        self.dbscan_min_points = int(
+            self.get_parameter("dbscan_min_points").value
+        )
+
+        self.keep_nearby_clusters = bool(
+            self.get_parameter("keep_nearby_clusters").value
+        )
+        self.nearby_cluster_xy_radius = float(
+            self.get_parameter("nearby_cluster_xy_radius").value
+        )
+        self.nearby_cluster_z_radius = float(
+            self.get_parameter("nearby_cluster_z_radius").value
+        )
+        self.min_cluster_size_to_keep = int(
+            self.get_parameter("min_cluster_size_to_keep").value
+        )
+
+        # -----------------------------
         # Grasp estimation
+        # -----------------------------
         self.grasp_z_offset = 0.035
 
+        # -----------------------------
         # Create selected models
+        # -----------------------------
         self.get_logger().info(
             f"Selected depth model: {self.depth_model_name}"
         )
@@ -168,10 +327,54 @@ class AutoGraspScanner(Node):
             f"Selected grasp model: {self.grasp_model_name}"
         )
 
+        self.get_logger().info(
+            f"Depth Pro input size: {self.depth_pro_input_size}"
+        )
+        self.get_logger().info(
+            f"Depth Pro force CPU: {self.depth_pro_force_cpu}"
+        )
+
+        self.get_logger().info(
+            f"Image crop ratio: top_ignore={self.image_ignore_top_ratio_y}, "
+            f"bottom_keep={self.image_keep_ratio_y}"
+        )
+
+        self.get_logger().info(
+            f"Debug PCD saving: {self.save_debug_pcd}"
+        )
+        self.get_logger().info(
+            f"Debug PCD directory: {self.debug_pcd_dir}"
+        )
+
+        self.get_logger().info(
+            "Cleaning parameters: "
+            f"pixel_step={self.pixel_step}, "
+            f"final_voxel={self.final_voxel_size}, "
+            f"plane_removal={self.enable_plane_removal}, "
+            f"plane_dist={self.plane_distance_threshold}, "
+            f"above_plane={self.object_above_plane_threshold}, "
+            f"plane_min_inlier_ratio={self.plane_min_inlier_ratio}, "
+            f"plane_min_normal_z={self.plane_min_normal_z}, "
+            f"radius_filter={self.enable_radius_outlier_removal}, "
+            f"radius_nb={self.radius_outlier_nb_points}, "
+            f"radius={self.radius_outlier_radius}, "
+            f"stat_filter={self.enable_statistical_outlier_removal}, "
+            f"stat_neighbors={self.outlier_nb_neighbors}, "
+            f"stat_std={self.outlier_std_ratio}, "
+            f"dbscan_eps={self.dbscan_eps}, "
+            f"dbscan_min_points={self.dbscan_min_points}, "
+            f"keep_nearby_clusters={self.keep_nearby_clusters}"
+        )
+
         self.depth_model = create_depth_model(
             model_name=self.depth_model_name,
             device=self.device,
-            logger=self.get_logger()
+            logger=self.get_logger(),
+            checkpoint_path=self.depth_anything_checkpoint,
+            encoder=self.depth_anything_encoder,
+            max_depth=self.depth_anything_max_depth,
+            depth_pro_input_size=self.depth_pro_input_size,
+            depth_pro_force_cpu=self.depth_pro_force_cpu,
         )
 
         self.grasp_model = create_grasp_model(
@@ -180,7 +383,9 @@ class AutoGraspScanner(Node):
             z_offset=self.grasp_z_offset
         )
 
+        # -----------------------------
         # UR joint names
+        # -----------------------------
         self.joint_names = [
             'shoulder_pan_joint',
             'shoulder_lift_joint',
@@ -246,11 +451,15 @@ class AutoGraspScanner(Node):
 
         self.current_waypoint_index = 0
 
+        # -----------------------------
         # Motion timing
+        # -----------------------------
         self.move_duration_sec = 3.0
         self.settle_time_sec = 1.0
 
+        # -----------------------------
         # State machine
+        # -----------------------------
         self.state = "IDLE"
         self.state_start_time = self.get_clock().now()
         self.scan_active = False
@@ -369,8 +578,6 @@ class AutoGraspScanner(Node):
 
     def timer_callback(self):
         if self.state == "IDLE":
-            # Keep publishing final cloud after scan is finished,
-            # so RViz can display it even if display is added late.
             if (
                 self.scan_finished
                 and self.final_pcd is not None
@@ -378,8 +585,6 @@ class AutoGraspScanner(Node):
             ):
                 self.publish_pointcloud(self.final_pcd)
 
-            # Keep publishing final grasp pose and marker.
-            # This lets grasp_executor receive the pose even if it starts later.
             if self.scan_finished and self.last_grasp_pose is not None:
                 self.last_grasp_pose.header.stamp = self.get_clock().now().to_msg()
                 self.grasp_pub.publish(self.last_grasp_pose)
@@ -469,6 +674,17 @@ class AutoGraspScanner(Node):
 
         if pcd is None or len(pcd.points) == 0:
             self.get_logger().warn("No valid point cloud from this frame.")
+
+            self.capture_remaining -= 1
+            failed = self.frames_per_view - self.capture_remaining
+
+            self.get_logger().warn(
+                f"Failed capture frame {failed}/{self.frames_per_view}"
+            )
+
+            if self.capture_remaining <= 0:
+                self.is_capturing = False
+
             return
 
         pcd = pcd.voxel_down_sample(voxel_size=self.frame_voxel_size)
@@ -503,13 +719,27 @@ class AutoGraspScanner(Node):
             cv_image = cv2.flip(cv_image, 1)
 
         try:
-            depth_map = self.depth_model.predict(cv_image)
+            depth_map = self.depth_model.predict(
+                cv_image,
+                camera_intrinsics={
+                    "fx": self.fx,
+                    "fy": self.fy,
+                    "cx": self.cx,
+                    "cy": self.cy,
+                    "width": self.image_width,
+                    "height": self.image_height,
+                }
+            )
             depth_map = np.asarray(depth_map).astype(np.float32)
 
         except Exception as e:
             self.get_logger().error(
                 f"Depth model [{self.depth_model_name}] failed: {e}"
             )
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             return None
 
         try:
@@ -527,7 +757,6 @@ class AutoGraspScanner(Node):
 
         depth_map = self.scale_depth_to_camera_height(depth_map, trans)
 
-        # Store latest frame data for future grasp models such as GGCNN.
         self.last_rgb_image = cv_image.copy()
         self.last_depth_map = depth_map.copy()
         self.last_camera_transform = trans
@@ -553,7 +782,6 @@ class AutoGraspScanner(Node):
 
         rot_mat = R.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
 
-        # In current mapping, camera_link X is depth direction.
         cam_depth_dir_in_base = rot_mat[:, 0]
         cos_theta = abs(cam_depth_dir_in_base[2])
 
@@ -584,13 +812,14 @@ class AutoGraspScanner(Node):
 
         z_depth = depth_map[v, u]
 
-        # Remove lower part of image where gripper/robot body appears.
-        v_limit = int(h * self.image_keep_ratio_y)
+        v_min = int(h * self.image_ignore_top_ratio_y)
+        v_max = int(h * self.image_keep_ratio_y)
 
         valid = (
             np.isfinite(z_depth)
             & (z_depth > 0.02)
-            & (v < v_limit)
+            & (v > v_min)
+            & (v < v_max)
         )
 
         u = u[valid]
@@ -608,10 +837,6 @@ class AutoGraspScanner(Node):
         else:
             y_link = -x_opt
 
-        # Current working mapping:
-        # camera_link X = depth
-        # camera_link Y = image x direction
-        # camera_link Z = negative image y direction
         points_camera_link = np.stack(
             (
                 z_depth,
@@ -656,16 +881,93 @@ class AutoGraspScanner(Node):
 
         return points_base, colors
 
+    def save_debug_pointcloud(self, filename, pcd):
+        if not self.save_debug_pcd:
+            return
+
+        if pcd is None or len(pcd.points) == 0:
+            return
+
+        os.makedirs(self.debug_pcd_dir, exist_ok=True)
+
+        save_path = os.path.join(self.debug_pcd_dir, filename)
+
+        try:
+            o3d.io.write_point_cloud(save_path, pcd)
+            self.get_logger().info(f"Saved debug point cloud: {save_path}")
+        except Exception as e:
+            self.get_logger().warn(
+                f"Failed to save debug point cloud {save_path}: {e}"
+            )
+
+    def copy_pcd_from_arrays(self, points, colors):
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+
+        if colors is not None and len(colors) == len(points):
+            pcd.colors = o3d.utility.Vector3dVector(colors.astype(np.float64))
+
+        return pcd
+
     def remove_dominant_plane_and_cluster(self, pcd):
         if pcd is None or len(pcd.points) < 50:
-            self.get_logger().warn("Input point cloud too small for plane removal.")
+            self.get_logger().warn("Input point cloud too small for cleaning.")
             return None
 
-        # First remove sparse noise.
-        pcd, _ = pcd.remove_statistical_outlier(
-            nb_neighbors=20,
-            std_ratio=1.5
+        self.get_logger().info(
+            f"Cleaning input points: {len(pcd.points)}"
         )
+
+        self.save_debug_pointcloud(
+            "01_input_downsampled.ply",
+            pcd
+        )
+
+        # Step 1: Remove sparse isolated points using radius outlier removal.
+        if self.enable_radius_outlier_removal and len(pcd.points) >= 50:
+            try:
+                pcd, _ = pcd.remove_radius_outlier(
+                    nb_points=self.radius_outlier_nb_points,
+                    radius=self.radius_outlier_radius
+                )
+
+                self.get_logger().info(
+                    f"After radius outlier removal: {len(pcd.points)} points"
+                )
+
+                self.save_debug_pointcloud(
+                    "02_after_radius_outlier.ply",
+                    pcd
+                )
+
+            except Exception as e:
+                self.get_logger().warn(f"Radius outlier removal failed: {e}")
+
+        if len(pcd.points) < 50:
+            self.get_logger().warn(
+                "Point cloud too small after radius outlier removal."
+            )
+            return None
+
+        # Step 2: Apply mild statistical outlier removal.
+        if self.enable_statistical_outlier_removal and len(pcd.points) >= 50:
+            try:
+                pcd, _ = pcd.remove_statistical_outlier(
+                    nb_neighbors=self.outlier_nb_neighbors,
+                    std_ratio=self.outlier_std_ratio
+                )
+
+                self.get_logger().info(
+                    f"After statistical outlier removal: {len(pcd.points)} points"
+                )
+
+                self.save_debug_pointcloud(
+                    "03_after_statistical_outlier.ply",
+                    pcd
+                )
+
+            except Exception as e:
+                self.get_logger().warn(f"Statistical outlier removal failed: {e}")
 
         if len(pcd.points) < 50:
             self.get_logger().warn(
@@ -673,61 +975,120 @@ class AutoGraspScanner(Node):
             )
             return None
 
-        # Estimate dominant plane. Usually this is table/floor.
-        try:
-            plane_model, plane_inliers = pcd.segment_plane(
-                distance_threshold=self.plane_distance_threshold,
-                ransac_n=3,
-                num_iterations=800
+        # Step 3: Optional plane removal.
+        if not self.enable_plane_removal:
+            self.get_logger().info(
+                "Plane removal disabled. Using filtered point cloud as object candidate."
             )
-        except Exception as e:
-            self.get_logger().warn(f"Plane segmentation failed: {e}")
-            return None
 
-        a, b, c, d = plane_model
-        points = np.asarray(pcd.points)
+            object_pcd = pcd
+            object_points = np.asarray(object_pcd.points)
 
-        has_colors = len(pcd.colors) == len(pcd.points)
-        if has_colors:
-            colors = np.asarray(pcd.colors)
+            if len(object_pcd.colors) == len(object_pcd.points):
+                object_colors = np.asarray(object_pcd.colors)
+            else:
+                object_colors = np.ones_like(object_points)
+
+            self.save_debug_pointcloud(
+                "04_plane_removal_skipped.ply",
+                object_pcd
+            )
+
         else:
-            colors = np.ones_like(points)
+            try:
+                plane_model, plane_inliers = pcd.segment_plane(
+                    distance_threshold=self.plane_distance_threshold,
+                    ransac_n=3,
+                    num_iterations=800
+                )
+            except Exception as e:
+                self.get_logger().warn(f"Plane segmentation failed: {e}")
+                return None
 
-        # Signed distance to plane.
-        dist = a * points[:, 0] + b * points[:, 1] + c * points[:, 2] + d
-        norm = np.sqrt(a * a + b * b + c * c)
+            a, b, c, d = plane_model
+            points = np.asarray(pcd.points)
 
-        if norm < 1e-6:
-            self.get_logger().warn("Invalid plane normal.")
-            return None
+            if len(pcd.colors) == len(pcd.points):
+                colors = np.asarray(pcd.colors)
+            else:
+                colors = np.ones_like(points)
 
-        dist = dist / norm
+            norm = np.sqrt(a * a + b * b + c * c)
 
-        # Make normal roughly point upward in base_link.
-        if c < 0:
-            dist = -dist
+            if norm < 1e-6:
+                self.get_logger().warn("Invalid plane normal.")
+                return None
 
-        # Keep points above the plane.
-        above_mask = dist > self.object_above_plane_threshold
+            normal_z = abs(c / norm)
+            inlier_ratio = float(len(plane_inliers)) / float(len(points))
 
-        object_points = points[above_mask]
-        object_colors = colors[above_mask]
+            self.get_logger().info(
+                f"Detected plane: inlier_ratio={inlier_ratio:.3f}, "
+                f"normal_z={normal_z:.3f}, "
+                f"inliers={len(plane_inliers)}/{len(points)}"
+            )
 
-        if len(object_points) < 30:
+            plane_is_reliable = (
+                inlier_ratio >= self.plane_min_inlier_ratio
+                and normal_z >= self.plane_min_normal_z
+            )
+
+            if not plane_is_reliable:
+                self.get_logger().warn(
+                    "Plane is not reliable. Skipping plane removal to avoid cutting the object."
+                )
+
+                object_pcd = pcd
+                object_points = points
+                object_colors = colors
+
+                self.save_debug_pointcloud(
+                    "04_plane_removal_rejected.ply",
+                    object_pcd
+                )
+
+            else:
+                dist = a * points[:, 0] + b * points[:, 1] + c * points[:, 2] + d
+                dist = dist / norm
+
+                if c < 0:
+                    dist = -dist
+
+                above_mask = dist > self.object_above_plane_threshold
+
+                object_points = points[above_mask]
+                object_colors = colors[above_mask]
+
+                self.get_logger().info(
+                    f"After plane removal: {len(object_points)} object candidate points"
+                )
+
+                if len(object_points) < 30:
+                    self.get_logger().warn(
+                        f"Not enough points above plane: {len(object_points)}. "
+                        "Falling back to filtered point cloud."
+                    )
+
+                    object_points = points
+                    object_colors = colors
+
+                object_pcd = self.copy_pcd_from_arrays(
+                    object_points,
+                    object_colors
+                )
+
+                self.save_debug_pointcloud(
+                    "04_after_plane_removal.ply",
+                    object_pcd
+                )
+
+        if object_points is None or len(object_points) < 30:
             self.get_logger().warn(
-                f"Not enough points above plane: {len(object_points)}"
+                "Not enough object candidate points."
             )
             return None
 
-        object_pcd = o3d.geometry.PointCloud()
-        object_pcd.points = o3d.utility.Vector3dVector(
-            object_points.astype(np.float64)
-        )
-        object_pcd.colors = o3d.utility.Vector3dVector(
-            object_colors.astype(np.float64)
-        )
-
-        # DBSCAN clustering removes remaining fragments.
+        # Step 4: DBSCAN to remove far-away fragments while keeping nearby object fragments.
         try:
             labels = np.array(
                 object_pcd.cluster_dbscan(
@@ -744,37 +1105,100 @@ class AutoGraspScanner(Node):
 
         if len(valid_labels) == 0:
             self.get_logger().warn(
-                "DBSCAN found no valid cluster. Returning plane-filtered cloud."
+                "DBSCAN found no valid cluster. Returning filtered object candidate cloud."
             )
             return object_pcd
 
         unique_labels, counts = np.unique(valid_labels, return_counts=True)
-        best_label = unique_labels[np.argmax(counts)]
 
-        cluster_mask = labels == best_label
+        largest_index = int(np.argmax(counts))
+        primary_label = unique_labels[largest_index]
+        primary_count = counts[largest_index]
 
-        cluster_points = object_points[cluster_mask]
-        cluster_colors = object_colors[cluster_mask]
+        primary_mask = labels == primary_label
+        primary_points = object_points[primary_mask]
+        primary_colors = object_colors[primary_mask]
 
-        if len(cluster_points) < 30:
+        primary_center = np.median(primary_points, axis=0)
+
+        self.get_logger().info(
+            f"DBSCAN clusters: {len(unique_labels)}, "
+            f"primary label: {primary_label}, "
+            f"primary points: {primary_count}"
+        )
+
+        if not self.keep_nearby_clusters:
+            selected_points = primary_points
+            selected_colors = primary_colors
+
+        else:
+            keep_mask = np.zeros_like(labels, dtype=bool)
+            kept_labels = []
+
+            for label, count in zip(unique_labels, counts):
+                if count < self.min_cluster_size_to_keep:
+                    continue
+
+                cluster_mask = labels == label
+                cluster_points = object_points[cluster_mask]
+
+                if len(cluster_points) == 0:
+                    continue
+
+                cluster_center = np.median(cluster_points, axis=0)
+
+                xy_dist = np.linalg.norm(
+                    cluster_center[:2] - primary_center[:2]
+                )
+                z_dist = abs(cluster_center[2] - primary_center[2])
+
+                if (
+                    label == primary_label
+                    or (
+                        xy_dist <= self.nearby_cluster_xy_radius
+                        and z_dist <= self.nearby_cluster_z_radius
+                    )
+                ):
+                    keep_mask = keep_mask | cluster_mask
+                    kept_labels.append(int(label))
+
+            selected_points = object_points[keep_mask]
+            selected_colors = object_colors[keep_mask]
+
+            self.get_logger().info(
+                f"Kept nearby cluster labels: {kept_labels}, "
+                f"selected points: {len(selected_points)}"
+            )
+
+            if len(selected_points) < 30:
+                self.get_logger().warn(
+                    "Nearby cluster selection produced too few points. "
+                    "Falling back to primary cluster."
+                )
+                selected_points = primary_points
+                selected_colors = primary_colors
+
+        if len(selected_points) < 30:
             self.get_logger().warn(
-                f"Selected DBSCAN cluster too small: {len(cluster_points)}"
+                f"Selected object cloud too small: {len(selected_points)}"
             )
             return object_pcd
 
-        cluster_pcd = o3d.geometry.PointCloud()
-        cluster_pcd.points = o3d.utility.Vector3dVector(
-            cluster_points.astype(np.float64)
+        selected_pcd = self.copy_pcd_from_arrays(
+            selected_points,
+            selected_colors
         )
-        cluster_pcd.colors = o3d.utility.Vector3dVector(
-            cluster_colors.astype(np.float64)
+
+        self.save_debug_pointcloud(
+            "05_after_dbscan_selected_clusters.ply",
+            selected_pcd
         )
 
         self.get_logger().info(
-            f"Plane removed. Object cluster points: {len(cluster_points)}"
+            f"Final selected object points: {len(selected_points)}"
         )
 
-        return cluster_pcd
+        return selected_pcd
 
     def compute_grasp_from_cloud(self):
         if len(self.global_pcd.points) == 0:
@@ -845,7 +1269,6 @@ class AutoGraspScanner(Node):
             f"Grasp score: {prediction.score:.3f}"
         )
 
-        # Keep cleaned object cloud for RViz continuous publishing.
         self.final_pcd = object_pcd
 
         save_dir = os.path.expanduser('~/robot_description/sfm_dataset/dense')
@@ -868,7 +1291,6 @@ class AutoGraspScanner(Node):
 
         marker.pose = pose.pose
 
-        # Arrow size
         marker.scale.x = 0.12
         marker.scale.y = 0.025
         marker.scale.z = 0.025

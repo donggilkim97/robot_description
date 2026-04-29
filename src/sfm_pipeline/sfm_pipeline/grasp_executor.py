@@ -88,8 +88,16 @@ class GraspExecutor(Node):
         self.declare_parameter("orientation_mode", "current_with_target_yaw")
         self.declare_parameter("auto_execute_on_pose", False)
         self.declare_parameter("avoid_collisions", False)
+        self.declare_parameter("grasp_yaw_offset_deg", -90.0)
 
         self.orientation_mode = self.get_parameter("orientation_mode").value
+        self.grasp_yaw_offset_deg = float(
+            self.get_parameter("grasp_yaw_offset_deg").value
+        )
+        self.get_logger().info(
+            f"Grasp yaw offset: {self.grasp_yaw_offset_deg:.1f} deg"
+        )
+        self.grasp_yaw_offset_rad = math.radians(self.grasp_yaw_offset_deg)
         self.auto_execute_on_pose = bool(
             self.get_parameter("auto_execute_on_pose").value
         )
@@ -121,12 +129,13 @@ class GraspExecutor(Node):
         self.gripper_open_position = 0.0
 
         # Do not over-close at first. 0.70 is too aggressive for contact simulation.
-        self.gripper_close_position = 0.35
+        self.gripper_close_position = 0.70
 
         # Slower close gives PhysX time to resolve contact.
-        self.gripper_move_time_sec = 2.0
+        self.gripper_move_time_sec = 4.0
 
         # Extra wait after gripper command before lifting.
+        self.min_close_wait_sec = 4.5
         self.post_grasp_hold_time = 2.0
 
         # Gripper wait settings
@@ -446,6 +455,7 @@ class GraspExecutor(Node):
             ])
 
             target_yaw = self.rotation_to_yaw(target_rot)
+            target_yaw = self.normalize_angle(target_yaw + self.grasp_yaw_offset_rad)
 
             yaw_delta = self.normalize_angle(target_yaw - current_yaw)
 
@@ -458,9 +468,10 @@ class GraspExecutor(Node):
             pose.orientation.w = float(desired_q[3])
 
             self.get_logger().info(
-                f"Applied target yaw while preserving tool attitude: "
+                f"Applied target yaw with offset while preserving tool attitude: "
                 f"current_yaw={math.degrees(current_yaw):.1f} deg, "
-                f"target_yaw={math.degrees(target_yaw):.1f} deg, "
+                f"target_yaw_with_offset={math.degrees(target_yaw):.1f} deg, "
+                f"offset={self.grasp_yaw_offset_deg:.1f} deg, "
                 f"delta={math.degrees(yaw_delta):.1f} deg"
             )
 
@@ -717,12 +728,26 @@ class GraspExecutor(Node):
                 error = abs(current_position - target_position)
 
                 if label == "close":
-                    if time.time() - start_time >= self.gripper_move_time_sec:
-                        self.get_logger().info(
-                            f"Gripper close command duration elapsed. "
-                            f"current={current_position:.3f}, target={target_position:.3f}"
-                        )
-                        return True
+                    elapsed = time.time() - start_time
+
+                    if elapsed < self.min_close_wait_sec:
+                        now = time.time()
+                        if now - last_report_time > 1.0:
+                            last_report_time = now
+                            self.get_logger().info(
+                                f"Force waiting for gripper close... "
+                                f"elapsed={elapsed:.1f}/{self.min_close_wait_sec:.1f}s, "
+                                f"current={current_position:.3f}, "
+                                f"target={target_position:.3f}"
+                            )
+                        time.sleep(0.05)
+                        continue
+
+                    self.get_logger().info(
+                        f"Minimum gripper close wait finished. "
+                        f"current={current_position:.3f}, target={target_position:.3f}"
+                    )
+                    return True
 
                 if error < self.gripper_position_tolerance:
                     if stable_start_time is None:

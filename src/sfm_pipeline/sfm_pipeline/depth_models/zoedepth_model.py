@@ -1,3 +1,5 @@
+from typing import Dict, Optional
+
 import numpy as np
 import torch
 from PIL import Image as PILImage
@@ -25,7 +27,11 @@ class ZoeDepthModel(BaseDepthModel):
         if self.logger is not None:
             self.logger.info("ZoeDepth loaded.")
 
-    def predict(self, rgb_image: np.ndarray) -> np.ndarray:
+    def predict(
+        self,
+        rgb_image: np.ndarray,
+        camera_intrinsics: Optional[Dict[str, float]] = None
+    ) -> np.ndarray:
         if rgb_image.dtype != np.uint8:
             rgb_image = np.clip(rgb_image, 0, 255).astype(np.uint8)
 

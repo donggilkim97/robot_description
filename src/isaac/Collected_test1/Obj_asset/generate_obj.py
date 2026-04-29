@@ -9,30 +9,26 @@ try:
 except Exception:
     from omni.isaac.core.utils.stage import add_reference_to_stage
 
-from pxr import Usd, UsdGeom, Gf, UsdPhysics, PhysxSchema, UsdShade, Sdf
+from pxr import Usd, UsdGeom, Gf, UsdPhysics, PhysxSchema, UsdShade
 
 
 # -----------------------------
 # User settings
 # -----------------------------
-folder_path = "/home/donggil/robot_description/src/isaac/Collected_test1/Obj_asset"
+folder_path = "/home/dk/robot_description/src/isaac/Collected_test1/Obj_asset"
 target_root_path = "/World/TargetObject"
 
 spawn_position = Gf.Vec3d(0.5, 0.0, 0.08)
 object_mass = 0.10
 
-# Good default for random objects / mugs.
-# Options you may try:
-# "convexHull"
-# "convexDecomposition"
-# "sdf"
+# Back to previous style.
+# This keeps collider closer to the actual object shape.
 collision_approximation = "convexDecomposition"
 
 static_friction = 1.2
 dynamic_friction = 1.0
 restitution = 0.0
 
-# Safer than 0.001 for grasping/contact.
 contact_offset = 0.005
 rest_offset = 0.0
 
@@ -51,7 +47,7 @@ def remove_api_if_exists(prim, api_schema):
 def remove_nested_rigid_bodies(root_prim):
     """
     Remove RigidBodyAPI/MassAPI from all children.
-    We keep only ONE rigid body on /World/TargetObject.
+    Keep only ONE rigid body on /World/TargetObject.
     """
     for prim in Usd.PrimRange(root_prim):
         if prim.GetPath() == root_prim.GetPath():
@@ -76,15 +72,9 @@ def create_or_get_scope(stage, path):
 
 
 def create_or_get_physics_material(stage):
-    """
-    Create a physics material.
-    This material is NOT used as a visual/render material.
-    It will be bound using material:binding:physics only.
-    """
     create_or_get_scope(stage, "/World/PhysicsMaterials")
 
     material_path = "/World/PhysicsMaterials/HighFrictionPhysicsMaterial"
-
     mat_prim = stage.GetPrimAtPath(material_path)
 
     if not mat_prim.IsValid():
@@ -108,9 +98,8 @@ def create_or_get_physics_material(stage):
 
 def bind_physics_material_only(prim, material):
     """
-    IMPORTANT:
-    This binds the material only for physics, using material:binding:physics.
-    It does NOT overwrite the visual material / texture.
+    Bind only physics material.
+    Visual material / texture is preserved.
     """
     try:
         rel = prim.CreateRelationship("material:binding:physics", False)
@@ -122,15 +111,18 @@ def bind_physics_material_only(prim, material):
 
 def apply_root_rigid_body(root_prim):
     """
-    Apply exactly one rigid body to the object root.
+    Apply exactly one dynamic rigid body to the root object.
     """
     if not root_prim.HasAPI(UsdPhysics.RigidBodyAPI):
         rb_api = UsdPhysics.RigidBodyAPI.Apply(root_prim)
     else:
         rb_api = UsdPhysics.RigidBodyAPI(root_prim)
 
+    rb_api.CreateRigidBodyEnabledAttr().Set(True)
+
+    # Make sure object is dynamic, not kinematic.
     try:
-        rb_api.CreateRigidBodyEnabledAttr().Set(True)
+        rb_api.CreateKinematicEnabledAttr().Set(False)
     except Exception:
         pass
 
@@ -161,7 +153,6 @@ def apply_colliders_to_meshes(root_prim, physics_material):
     """
     Apply collision to mesh descendants only.
     Do NOT apply RigidBodyAPI to mesh descendants.
-    Preserve visual material/texture.
     """
     mesh_count = 0
 
@@ -171,7 +162,7 @@ def apply_colliders_to_meshes(root_prim, physics_material):
 
         mesh_count += 1
 
-        # Make sure mesh is not a separate rigid body.
+        # Mesh children should not be separate rigid bodies.
         remove_api_if_exists(prim, UsdPhysics.RigidBodyAPI)
         remove_api_if_exists(prim, UsdPhysics.MassAPI)
 
@@ -182,7 +173,14 @@ def apply_colliders_to_meshes(root_prim, physics_material):
 
         # Collision API
         if not prim.HasAPI(UsdPhysics.CollisionAPI):
-            UsdPhysics.CollisionAPI.Apply(prim)
+            collision_api = UsdPhysics.CollisionAPI.Apply(prim)
+        else:
+            collision_api = UsdPhysics.CollisionAPI(prim)
+
+        try:
+            collision_api.CreateCollisionEnabledAttr().Set(True)
+        except Exception:
+            pass
 
         # Mesh collision approximation
         if not prim.HasAPI(UsdPhysics.MeshCollisionAPI):
@@ -201,8 +199,7 @@ def apply_colliders_to_meshes(root_prim, physics_material):
         physx_collision_api.CreateContactOffsetAttr().Set(contact_offset)
         physx_collision_api.CreateRestOffsetAttr().Set(rest_offset)
 
-        # Physics material only.
-        # This will not remove the object's visual material or texture.
+        # Physics material only
         bind_physics_material_only(prim, physics_material)
 
     print(f"[INFO] Applied colliders to {mesh_count} mesh prim(s).")
@@ -212,10 +209,6 @@ def apply_colliders_to_meshes(root_prim, physics_material):
 
 
 def clean_camera_nested_rigidbody(stage):
-    """
-    Your log showed nested rigid body warning on camera child.
-    Camera visual/sensor should not be a separate rigid body under camera_link.
-    """
     camera_rigid_paths = [
         "/World/ur5e_custom_setup/camera_link/Realsense/RSD455"
     ]
@@ -258,7 +251,6 @@ def spawn_random_object():
 
     stage = omni.usd.get_context().get_stage()
 
-    # Remove old object so old wrong material bindings are gone too.
     delete_old_target_object(stage)
 
     chosen_file = random.choice(object_files)
@@ -289,25 +281,27 @@ def spawn_random_object():
     # Remove nested rigid bodies from referenced asset.
     remove_nested_rigid_bodies(root_prim)
 
-    # Create physics material without overwriting visual texture.
+    # Create physics material.
     physics_material = create_or_get_physics_material(stage)
 
-    # Apply one rigid body to root.
+    # Apply one dynamic rigid body to root.
     apply_root_rigid_body(root_prim)
 
-    # Apply colliders to mesh children.
+    # Apply object-shape mesh colliders.
     apply_colliders_to_meshes(root_prim, physics_material)
 
-    # Optional cleanup for camera warning.
+    # Optional cleanup.
     clean_camera_nested_rigidbody(stage)
 
     print("--------------------------------------------------")
     print(f"[SUCCESS] Spawned: {chosen_file}")
     print(f"[PATH]    {usd_path}")
     print(f"[POSE]    position={spawn_position}, yaw={random_yaw:.2f} deg")
-    print("[PHYSICS] one root rigid body + mesh child colliders")
-    print("[MATERIAL] physics material bound only to material:binding:physics")
-    print("[VISUAL] original colors/textures should be preserved")
+    print("[PHYSICS] one dynamic root rigid body + mesh child colliders")
+    print(f"[COLLIDER] approximation={collision_approximation}")
+    print(f"[MASS]     {object_mass} kg")
+    print(f"[CONTACT]  contact_offset={contact_offset}, rest_offset={rest_offset}")
+    print("[MATERIAL] physics material only; visual texture preserved")
     print("--------------------------------------------------")
 
 
