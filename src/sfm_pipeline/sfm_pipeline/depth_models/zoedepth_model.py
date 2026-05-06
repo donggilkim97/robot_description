@@ -23,6 +23,7 @@ class ZoeDepthModel(BaseDepthModel):
 
         self.model.to(self.device)
         self.model.eval()
+        self.patch_missing_drop_path()
 
         if self.logger is not None:
             self.logger.info("ZoeDepth loaded.")
@@ -43,3 +44,24 @@ class ZoeDepthModel(BaseDepthModel):
         depth_map = np.asarray(depth_map).astype(np.float32)
 
         return depth_map
+    
+    def patch_missing_drop_path(self):
+        """
+        Compatibility patch for ZoeDepth/MiDaS with newer timm versions.
+        Some transformer blocks use drop_path1/drop_path2 instead of drop_path.
+        ZoeDepth expects drop_path during inference.
+        """
+        patched = 0
+
+        for module in self.model.modules():
+            if hasattr(module, "drop_path"):
+                continue
+
+            if hasattr(module, "drop_path1"):
+                module.drop_path = module.drop_path1
+                patched += 1
+            elif hasattr(module, "drop_path2"):
+                module.drop_path = module.drop_path2
+                patched += 1
+
+        self.logger.info(f"Patched missing drop_path in {patched} module(s).")

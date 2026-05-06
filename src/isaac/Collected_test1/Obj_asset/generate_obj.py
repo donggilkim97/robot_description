@@ -1,8 +1,14 @@
 import os
 import random
+import csv
+import time
+import math
 
 import omni.usd
 import omni.kit.commands
+import omni.timeline
+import omni.kit.app
+import numpy as np
 
 try:
     from isaacsim.core.utils.stage import add_reference_to_stage
@@ -18,8 +24,19 @@ from pxr import Usd, UsdGeom, Gf, UsdPhysics, PhysxSchema, UsdShade
 folder_path = "/home/dk/robot_description/src/isaac/Collected_test1/Obj_asset"
 target_root_path = "/World/TargetObject"
 
+# Ground-truth outputs used by one_shot_grasp.py
+ground_truth_csv_path = "/home/dk/robot_description/sfm_dataset/ground_truth_objects.csv"
+ground_truth_pcd_dir = "/home/dk/robot_description/sfm_dataset/ground_truth_pcd"
+
 spawn_position = Gf.Vec3d(0.5, 0.0, 0.08)
 object_mass = 0.10
+
+# Let the object settle under physics before recording GT.
+settle_before_gt_save = True
+settle_seconds = 1.5
+
+# GT point cloud export settings
+max_gt_pcd_points = 50000
 
 # Back to previous style.
 # This keeps collider closer to the actual object shape.
@@ -228,6 +245,337 @@ def clean_camera_nested_rigidbody(stage):
             print(f"[INFO] Removed nested rigid body APIs from camera child: {path}")
 
 
+def settle_simulation(seconds=1.5):
+    """
+    Step Isaac Sim for a short time so the dynamic object can settle
+    before ground truth is recorded.
+    """
+    try:
+        timeline = omni.timeline.get_timeline_interface()
+        was_playing = timeline.is_playing()
+
+        if not was_playing:
+            timeline.play()
+
+        app = omni.kit.app.get_app()
+
+        # Approximate 60 FPS stepping.
+        steps = max(1, int(seconds * 60))
+
+        for _ in range(steps):
+            app.update()
+
+        if not was_playing:
+            timeline.pause()
+
+        print(f"[INFO] Simulation settled for {seconds:.2f} s before GT capture.")
+
+    except Exception as e:
+        print(f"[WARN] Simulation settle failed or was skipped: {e}")
+
+
+def get_world_bbox(stage, prim_path):
+    """
+    Compute the world-axis-aligned bounding box of the spawned object.
+    """
+    prim = stage.GetPrimAtPath(prim_path)
+
+    if not prim.IsValid():
+        print(f"[ERROR] Cannot compute bbox. Invalid prim: {prim_path}")
+        return None
+
+    try:
+        bbox_cache = UsdGeom.BBoxCache(
+            Usd.TimeCode.Default(),
+            [
+                UsdGeom.Tokens.default_,
+                UsdGeom.Tokens.render,
+                UsdGeom.Tokens.proxy
+            ],
+            True
+        )
+
+        bbox = bbox_cache.ComputeWorldBound(prim).ComputeAlignedBox()
+
+        min_pt = bbox.GetMin()
+        max_pt = bbox.GetMax()
+
+        center = Gf.Vec3d(
+            (min_pt[0] + max_pt[0]) / 2.0,
+            (min_pt[1] + max_pt[1]) / 2.0,
+            (min_pt[2] + max_pt[2]) / 2.0
+        )
+
+        dims = Gf.Vec3d(
+            max_pt[0] - min_pt[0],
+            max_pt[1] - min_pt[1],
+            max_pt[2] - min_pt[2]
+        )
+
+        return min_pt, max_pt, center, dims
+
+    except Exception as e:
+        print(f"[ERROR] Failed to compute world bbox for {prim_path}: {e}")
+        return None
+
+
+def save_points_as_ply(points, save_path, color=(0, 255, 0)):
+    """
+    Save a simple coloured point cloud as ASCII PLY.
+    """
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    with open(save_path, "w") as f:
+        f.write("ply\n")
+        f.write("format ascii 1.0\n")
+        f.write(f"element vertex {len(points)}\n")
+        f.write("property float x\n")
+        f.write("property float y\n")
+        f.write("property float z\n")
+        f.write("property uchar red\n")
+        f.write("property uchar green\n")
+        f.write("property uchar blue\n")
+        f.write("end_header\n")
+
+        r, g, b = color
+
+        for p in points:
+            f.write(f"{p[0]} {p[1]} {p[2]} {r} {g} {b}\n")
+
+
+def export_gt_object_pointcloud(stage, root_prim, object_name):
+    """
+    Export a sampled ground-truth object surface point cloud in world frame.
+    This is better than exporting only mesh vertices because it produces
+    a denser and more visually meaningful reference cloud.
+    """
+    if root_prim is None or not root_prim.IsValid():
+        print("[WARN] Cannot export GT point cloud: invalid root prim.")
+        return ""
+
+    xform_cache = UsdGeom.XformCache(Usd.TimeCode.Default())
+    triangles = []
+    triangle_areas = []
+
+    for prim in Usd.PrimRange(root_prim):
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+
+        mesh = UsdGeom.Mesh(prim)
+
+        local_points = mesh.GetPointsAttr().Get()
+        face_counts = mesh.GetFaceVertexCountsAttr().Get()
+        face_indices = mesh.GetFaceVertexIndicesAttr().Get()
+
+        if local_points is None or face_counts is None or face_indices is None:
+            continue
+
+        local_to_world = xform_cache.GetLocalToWorldTransform(prim)
+
+        world_points = []
+
+        for p in local_points:
+            wp = local_to_world.Transform(Gf.Vec3d(p[0], p[1], p[2]))
+            world_points.append(
+                np.array([float(wp[0]), float(wp[1]), float(wp[2])], dtype=np.float64)
+            )
+
+        index_offset = 0
+
+        for count in face_counts:
+            if count < 3:
+                index_offset += count
+                continue
+
+            face = face_indices[index_offset:index_offset + count]
+            index_offset += count
+
+            # Fan triangulation for polygon faces.
+            for i in range(1, count - 1):
+                p0 = world_points[face[0]]
+                p1 = world_points[face[i]]
+                p2 = world_points[face[i + 1]]
+
+                area = 0.5 * np.linalg.norm(np.cross(p1 - p0, p2 - p0))
+
+                if area > 1e-10:
+                    triangles.append((p0, p1, p2))
+                    triangle_areas.append(area)
+
+    if len(triangles) == 0:
+        print("[WARN] No valid triangles found for GT surface point cloud.")
+        return ""
+
+    triangle_areas = np.array(triangle_areas, dtype=np.float64)
+    area_sum = float(np.sum(triangle_areas))
+
+    if area_sum <= 1e-12:
+        print("[WARN] GT mesh surface area is too small.")
+        return ""
+
+    probabilities = triangle_areas / area_sum
+
+    sample_count = min(max_gt_pcd_points, 30000)
+    chosen_indices = np.random.choice(
+        len(triangles),
+        size=sample_count,
+        replace=True,
+        p=probabilities
+    )
+
+    points_world = []
+
+    for tri_idx in chosen_indices:
+        p0, p1, p2 = triangles[tri_idx]
+
+        r1 = random.random()
+        r2 = random.random()
+
+        sqrt_r1 = math.sqrt(r1)
+
+        # Uniform triangle surface sampling.
+        a = 1.0 - sqrt_r1
+        b = sqrt_r1 * (1.0 - r2)
+        c = sqrt_r1 * r2
+
+        p = a * p0 + b * p1 + c * p2
+        points_world.append((float(p[0]), float(p[1]), float(p[2])))
+
+    timestamp = int(time.time())
+    safe_name = os.path.splitext(object_name)[0].replace(" ", "_")
+
+    save_path = os.path.join(
+        ground_truth_pcd_dir,
+        f"gt_{timestamp}_{safe_name}.ply"
+    )
+
+    save_points_as_ply(
+        points=points_world,
+        save_path=save_path,
+        color=(0, 255, 0)
+    )
+
+    print(f"[GT_PCD] Saved sampled GT surface point cloud: {save_path}")
+    print(f"[GT_PCD] Number of GT sampled points: {len(points_world)}")
+
+    return save_path
+
+
+def save_ground_truth(stage, object_name, usd_path, prim_path, spawn_position, yaw_deg, gt_pcd_path=""):
+    """
+    Save ground-truth object pose and bounding box to CSV.
+
+    one_shot_grasp.py reads the latest row from:
+    /home/dk/robot_description/sfm_dataset/ground_truth_objects.csv
+    """
+    bbox_result = get_world_bbox(stage, prim_path)
+
+    if bbox_result is None:
+        print("[ERROR] Ground-truth save failed because bbox could not be computed.")
+        return
+
+    min_pt, max_pt, center, dims = bbox_result
+
+    os.makedirs(os.path.dirname(ground_truth_csv_path), exist_ok=True)
+
+    file_exists = os.path.exists(ground_truth_csv_path)
+
+    fieldnames = [
+        "timestamp",
+        "object_name",
+        "usd_path",
+        "prim_path",
+
+        "spawn_x",
+        "spawn_y",
+        "spawn_z",
+
+        "bbox_center_x",
+        "bbox_center_y",
+        "bbox_center_z",
+
+        "bbox_min_x",
+        "bbox_min_y",
+        "bbox_min_z",
+
+        "bbox_max_x",
+        "bbox_max_y",
+        "bbox_max_z",
+
+        "dim_x",
+        "dim_y",
+        "dim_z",
+
+        "top_z",
+        "yaw_deg",
+        "yaw_rad",
+        "object_mass",
+        "gt_pcd_path"
+    ]
+
+    # If the old CSV has a different header, back it up and create a new one.
+    if file_exists:
+        try:
+            with open(ground_truth_csv_path, "r") as f:
+                existing_header = f.readline().strip().split(",")
+
+            if existing_header != fieldnames:
+                backup_path = ground_truth_csv_path + f".backup_{int(time.time())}"
+                os.rename(ground_truth_csv_path, backup_path)
+                print(f"[GT] Existing GT CSV header changed. Backed up old file to: {backup_path}")
+                file_exists = False
+
+        except Exception as e:
+            print(f"[WARN] Could not check GT CSV header: {e}")
+
+    with open(ground_truth_csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+        if not file_exists:
+            writer.writeheader()
+
+        writer.writerow({
+            "timestamp": time.time(),
+            "object_name": object_name,
+            "usd_path": usd_path,
+            "prim_path": prim_path,
+
+            "spawn_x": float(spawn_position[0]),
+            "spawn_y": float(spawn_position[1]),
+            "spawn_z": float(spawn_position[2]),
+
+            "bbox_center_x": float(center[0]),
+            "bbox_center_y": float(center[1]),
+            "bbox_center_z": float(center[2]),
+
+            "bbox_min_x": float(min_pt[0]),
+            "bbox_min_y": float(min_pt[1]),
+            "bbox_min_z": float(min_pt[2]),
+
+            "bbox_max_x": float(max_pt[0]),
+            "bbox_max_y": float(max_pt[1]),
+            "bbox_max_z": float(max_pt[2]),
+
+            "dim_x": float(dims[0]),
+            "dim_y": float(dims[1]),
+            "dim_z": float(dims[2]),
+
+            "top_z": float(max_pt[2]),
+            "yaw_deg": float(yaw_deg),
+            "yaw_rad": float(math.radians(yaw_deg)),
+            "object_mass": float(object_mass),
+            "gt_pcd_path": gt_pcd_path
+        })
+
+    print(f"[GT] Saved ground truth to: {ground_truth_csv_path}")
+    print(
+        f"[GT] object={object_name}, "
+        f"center=({center[0]:.4f}, {center[1]:.4f}, {center[2]:.4f}), "
+        f"top_z={max_pt[2]:.4f}, "
+        f"yaw={yaw_deg:.2f} deg"
+    )
+
+
 def delete_old_target_object(stage):
     if stage.GetPrimAtPath(target_root_path).IsValid():
         omni.kit.commands.execute(
@@ -293,6 +641,31 @@ def spawn_random_object():
     # Optional cleanup.
     clean_camera_nested_rigidbody(stage)
 
+    # Let object settle before recording GT.
+    if settle_before_gt_save:
+        settle_simulation(settle_seconds)
+
+    # Re-read root prim after physics stepping.
+    root_prim = stage.GetPrimAtPath(target_root_path)
+
+    # Save GT object point cloud for RViz and comparison.
+    gt_pcd_path = export_gt_object_pointcloud(
+        stage=stage,
+        root_prim=root_prim,
+        object_name=chosen_file
+    )
+
+    # Save ground-truth pose and bounding box for quantitative evaluation.
+    save_ground_truth(
+        stage=stage,
+        object_name=chosen_file,
+        usd_path=usd_path,
+        prim_path=target_root_path,
+        spawn_position=spawn_position,
+        yaw_deg=random_yaw,
+        gt_pcd_path=gt_pcd_path
+    )
+
     print("--------------------------------------------------")
     print(f"[SUCCESS] Spawned: {chosen_file}")
     print(f"[PATH]    {usd_path}")
@@ -302,6 +675,7 @@ def spawn_random_object():
     print(f"[MASS]     {object_mass} kg")
     print(f"[CONTACT]  contact_offset={contact_offset}, rest_offset={rest_offset}")
     print("[MATERIAL] physics material only; visual texture preserved")
+    print(f"[GT_PCD]   {gt_pcd_path}")
     print("--------------------------------------------------")
 
 
