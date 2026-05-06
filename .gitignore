@@ -1,0 +1,12 @@
+
+# Large model/checkpoint files
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.safetensors
+*.bin
+
+# Local model folders
+checkpoints/
+models/
