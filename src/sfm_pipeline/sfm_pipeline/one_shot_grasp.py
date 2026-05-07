@@ -101,7 +101,13 @@ class AutoGraspScanner(Node):
         # This corrects residual vertical offset after monocular depth scaling.
         self.declare_parameter("enable_fused_table_z_alignment", True)
         self.declare_parameter("table_alignment_percentile", 2.0)
-        self.declare_parameter("max_table_z_correction", 0.080)
+        # Safety update: the old percentile method could lift the whole cloud if
+        # low streak/noise points existed below the table. The new default still
+        # allows table alignment, but only when a reliable table-like plane is found.
+        self.declare_parameter("table_alignment_use_plane", True)
+        self.declare_parameter("max_table_z_correction", 0.030)
+        self.declare_parameter("reject_large_table_z_correction", True)
+        self.declare_parameter("max_table_plane_z_error", 0.060)
 
         # Non-hardcoded table-height foreground filtering.
         # This removes table/background points by height above the known table plane,
@@ -196,8 +202,17 @@ class AutoGraspScanner(Node):
         self.table_alignment_percentile = float(
             self.get_parameter("table_alignment_percentile").value
         )
+        self.table_alignment_use_plane = bool(
+            self.get_parameter("table_alignment_use_plane").value
+        )
         self.max_table_z_correction = float(
             self.get_parameter("max_table_z_correction").value
+        )
+        self.reject_large_table_z_correction = bool(
+            self.get_parameter("reject_large_table_z_correction").value
+        )
+        self.max_table_plane_z_error = float(
+            self.get_parameter("max_table_plane_z_error").value
         )
 
         self.enable_table_height_filter = bool(self.get_parameter("enable_table_height_filter").value)
@@ -348,8 +363,11 @@ class AutoGraspScanner(Node):
         self.get_logger().info(
             "Fused table z alignment: "
             f"enabled={self.enable_fused_table_z_alignment}, "
+            f"use_plane={self.table_alignment_use_plane}, "
             f"percentile={self.table_alignment_percentile}, "
-            f"max_correction={self.max_table_z_correction}"
+            f"max_correction={self.max_table_z_correction}, "
+            f"reject_large={self.reject_large_table_z_correction}, "
+            f"max_plane_z_error={self.max_table_plane_z_error}"
         )
         self.get_logger().info(
             "Foreground height filter: "
@@ -1023,8 +1041,11 @@ class AutoGraspScanner(Node):
             },
             "fused_table_z_alignment": {
                 "enabled": self.enable_fused_table_z_alignment,
+                "table_alignment_use_plane": self.table_alignment_use_plane,
                 "table_alignment_percentile": self.table_alignment_percentile,
                 "max_table_z_correction": self.max_table_z_correction,
+                "reject_large_table_z_correction": self.reject_large_table_z_correction,
+                "max_table_plane_z_error": self.max_table_plane_z_error,
             },
             "table_height_filter": {
                 "enabled": self.enable_table_height_filter,
@@ -1182,13 +1203,96 @@ class AutoGraspScanner(Node):
 
         return filtered
 
+    def estimate_reliable_table_plane(self, pcd, purpose="table"):
+        """
+        Estimate a table-like plane and reject object-side/noise planes.
+
+        Returns a dictionary with the oriented plane model if reliable, otherwise None.
+        The plane normal is oriented so that +distance is above the table.
+        """
+        if pcd is None or len(pcd.points) < 50:
+            return None
+
+        try:
+            plane_model, plane_inliers = pcd.segment_plane(
+                distance_threshold=self.plane_distance_threshold,
+                ransac_n=3,
+                num_iterations=1200
+            )
+        except Exception as e:
+            self.get_logger().warn(f"{purpose}: plane segmentation failed: {e}")
+            return None
+
+        points = np.asarray(pcd.points)
+        colors = np.asarray(pcd.colors) if len(pcd.colors) == len(pcd.points) else np.ones_like(points)
+
+        a, b, c, d = [float(x) for x in plane_model]
+        norm = float(np.sqrt(a * a + b * b + c * c))
+
+        if norm < 1e-9 or abs(c) < 1e-6:
+            self.get_logger().warn(f"{purpose}: invalid or near-vertical plane normal.")
+            return None
+
+        # Orient plane normal upward. Then positive signed distance means above table.
+        if c < 0.0:
+            a, b, c, d = -a, -b, -c, -d
+
+        normal_z = abs(c / norm)
+        inlier_ratio = float(len(plane_inliers)) / float(len(points))
+
+        if len(plane_inliers) > 0:
+            inlier_points = points[np.asarray(plane_inliers, dtype=int)]
+            plane_z_median = float(np.median(inlier_points[:, 2]))
+            plane_z_p05 = float(np.percentile(inlier_points[:, 2], 5))
+            plane_z_p95 = float(np.percentile(inlier_points[:, 2], 95))
+        else:
+            plane_z_median = float("nan")
+            plane_z_p05 = float("nan")
+            plane_z_p95 = float("nan")
+
+        z_error = abs(plane_z_median - self.table_z) if np.isfinite(plane_z_median) else float("inf")
+
+        self.get_logger().info(
+            f"{purpose}: plane candidate: inlier_ratio={inlier_ratio:.3f}, "
+            f"normal_z={normal_z:.3f}, z_median={plane_z_median:.4f}, "
+            f"z_range=[{plane_z_p05:.4f}, {plane_z_p95:.4f}], "
+            f"z_error={z_error:.4f}, inliers={len(plane_inliers)}/{len(points)}"
+        )
+
+        reliable = (
+            inlier_ratio >= self.plane_min_inlier_ratio
+            and normal_z >= self.plane_min_normal_z
+            and z_error <= self.max_table_plane_z_error
+        )
+
+        if not reliable:
+            self.get_logger().warn(
+                f"{purpose}: rejected plane. "
+                f"Need inlier_ratio>={self.plane_min_inlier_ratio:.3f}, "
+                f"normal_z>={self.plane_min_normal_z:.3f}, "
+                f"z_error<={self.max_table_plane_z_error:.3f}."
+            )
+            return None
+
+        return {
+            "model": (a, b, c, d),
+            "norm": norm,
+            "inliers": plane_inliers,
+            "points": points,
+            "colors": colors,
+            "normal_z": normal_z,
+            "inlier_ratio": inlier_ratio,
+            "plane_z_median": plane_z_median,
+        }
+
     def align_fused_cloud_to_table_z(self, pcd):
         """
-        Correct residual z-offset in the fused point cloud using the known table plane.
+        Correct residual z-offset using a reliable table plane.
 
-        This is applied after multi-view fusion and final voxel downsampling, but before
-        the object height filter. It is not object-position hardcoding; it uses the known
-        environment table height as a calibration reference.
+        Important change:
+        The previous percentile-based method could be fooled by low streak/noise points
+        below the table, which lifted the whole object cloud. This version uses a
+        RANSAC table plane when possible and skips large/unreliable corrections.
         """
         if not self.enable_fused_table_z_alignment:
             return pcd
@@ -1196,29 +1300,53 @@ class AutoGraspScanner(Node):
         if pcd is None or len(pcd.points) < 50:
             return pcd
 
-        points = np.asarray(pcd.points)
+        correction = 0.0
+        observed_table_z = float("nan")
+        method = "none"
 
-        valid_z = points[
-            np.isfinite(points[:, 2])
-            & (points[:, 2] > self.min_base_z)
-            & (points[:, 2] < self.max_base_z),
-            2
-        ]
+        if self.table_alignment_use_plane:
+            plane_info = self.estimate_reliable_table_plane(pcd, purpose="fused table alignment")
+            if plane_info is not None:
+                observed_table_z = float(plane_info["plane_z_median"])
+                correction = self.table_z - observed_table_z
+                method = "ransac_table_plane"
+            else:
+                self.get_logger().warn(
+                    "Fused table z alignment: no reliable table plane found. "
+                    "Skipping z alignment to avoid lifting the cloud."
+                )
+                return pcd
+        else:
+            # Legacy fallback. Keep available for debugging, but the plane method is safer.
+            points = np.asarray(pcd.points)
+            valid_z = points[
+                np.isfinite(points[:, 2])
+                & (points[:, 2] > self.min_base_z)
+                & (points[:, 2] < self.max_base_z),
+                2
+            ]
 
-        if len(valid_z) < 50:
-            self.get_logger().warn(
-                "Not enough valid z values for fused table alignment. Skipping."
-            )
-            return pcd
+            if len(valid_z) < 50:
+                self.get_logger().warn(
+                    "Not enough valid z values for fused table alignment. Skipping."
+                )
+                return pcd
 
-        observed_table_z = float(np.percentile(valid_z, self.table_alignment_percentile))
-        correction = self.table_z - observed_table_z
+            observed_table_z = float(np.percentile(valid_z, self.table_alignment_percentile))
+            correction = self.table_z - observed_table_z
+            method = "legacy_percentile"
 
         if abs(correction) > self.max_table_z_correction:
-            self.get_logger().warn(
-                f"Large table z correction requested: {correction:.4f} m. "
-                f"Clamping to +/- {self.max_table_z_correction:.4f} m."
+            message = (
+                f"Fused table z alignment: correction {correction:.4f} m from {method} "
+                f"exceeds max_table_z_correction={self.max_table_z_correction:.4f} m."
             )
+
+            if self.reject_large_table_z_correction:
+                self.get_logger().warn(message + " Skipping correction.")
+                return pcd
+
+            self.get_logger().warn(message + " Clamping correction.")
             correction = float(
                 np.clip(
                     correction,
@@ -1227,16 +1355,65 @@ class AutoGraspScanner(Node):
                 )
             )
 
+        if abs(correction) < 1e-6:
+            return pcd
+
         corrected_pcd = o3d.geometry.PointCloud(pcd)
         corrected_pcd.translate((0.0, 0.0, correction))
 
         self.get_logger().info(
-            f"Fused table z alignment: observed_table_z={observed_table_z:.4f}, "
-            f"target_table_z={self.table_z:.4f}, "
-            f"applied_correction={correction:.4f} m"
+            f"Fused table z alignment ({method}): observed_table_z={observed_table_z:.4f}, "
+            f"target_table_z={self.table_z:.4f}, applied_correction={correction:.4f} m"
         )
 
         return corrected_pcd
+
+    def remove_reliable_table_plane(self, pcd):
+        """
+        Remove a reliable table plane before table-height filtering and DBSCAN.
+
+        This prevents RANSAC from being run after the table has already been removed,
+        which was the main reason the cleaner could pick the object side/top as a
+        false plane and make the selected cloud appear to rise.
+        """
+        if not self.enable_plane_removal:
+            self.get_logger().info(
+                "Plane removal disabled. Skipping geometric table-plane removal."
+            )
+            return pcd
+
+        plane_info = self.estimate_reliable_table_plane(pcd, purpose="table plane removal")
+
+        if plane_info is None:
+            self.save_debug_pointcloud("02_plane_removal_rejected.ply", pcd)
+            return pcd
+
+        a, b, c, d = plane_info["model"]
+        norm = plane_info["norm"]
+        points = plane_info["points"]
+        colors = plane_info["colors"]
+
+        signed_dist = (a * points[:, 0] + b * points[:, 1] + c * points[:, 2] + d) / norm
+
+        # Keep only points clearly above the table plane. This removes table points and
+        # below-table streaks. The normal was already oriented upward.
+        keep_mask = signed_dist > self.object_above_plane_threshold
+
+        if np.count_nonzero(keep_mask) < 30:
+            self.get_logger().warn(
+                "Plane removal would leave too few points. Keeping original cloud."
+            )
+            self.save_debug_pointcloud("02_plane_removal_too_few_points.ply", pcd)
+            return pcd
+
+        filtered = self.copy_pcd_from_arrays(points[keep_mask], colors[keep_mask])
+
+        self.get_logger().info(
+            f"After reliable table-plane removal: {len(filtered.points)} points"
+        )
+
+        self.save_debug_pointcloud("02_after_plane_removal.ply", filtered)
+        return filtered
 
     def record_cloud_stage(self, stage_name, pcd):
         count = 0 if pcd is None else len(pcd.points)
@@ -1490,33 +1667,6 @@ class AutoGraspScanner(Node):
         except Exception:
             return float("nan")
 
-    def add_bar_labels(self, ax, bars, values, decimals=0):
-        for bar, value in zip(bars, values):
-            try:
-                val = float(value)
-            except Exception:
-                continue
-
-            if not np.isfinite(val):
-                continue
-
-            height = bar.get_height()
-
-            if decimals == 0:
-                text = f"{int(round(val)):,}"
-            else:
-                text = f"{val:.{decimals}f}"
-
-            ax.annotate(
-                text,
-                xy=(bar.get_x() + bar.get_width() / 2.0, height),
-                xytext=(0, 4),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontsize=8
-            )
-
     def plot_point_count_by_stage(self):
         if (
             not self.save_eval_outputs
@@ -1529,27 +1679,15 @@ class AutoGraspScanner(Node):
         try:
             labels = list(self.cleaning_metrics.keys())
             values = [self.cleaning_metrics[k] for k in labels]
-            x = np.arange(len(labels))
 
             fig_path = self.current_figure_dir / "point_count_by_stage.png"
 
             plt.figure(figsize=(11, 4.8))
-            ax = plt.gca()
-
-            bars = ax.bar(x, values)
-
-            ax.set_ylabel("Number of points")
-            ax.set_xlabel("Point-cloud processing stage")
-            ax.set_title("Point-cloud reduction through cleaning pipeline")
-            ax.set_xticks(x)
-            ax.set_xticklabels(labels, rotation=25, ha="right")
-
-            self.add_bar_labels(ax, bars, values, decimals=0)
-
-            y_max = max(values) if len(values) > 0 else 0
-            if y_max > 0:
-                ax.set_ylim(0, y_max * 1.18)
-
+            plt.bar(labels, values)
+            plt.ylabel("Number of points")
+            plt.xlabel("Point-cloud processing stage")
+            plt.title("Point-cloud reduction through cleaning pipeline")
+            plt.xticks(rotation=25, ha="right")
             plt.tight_layout()
             plt.savefig(fig_path, dpi=250)
             plt.close()
@@ -1581,71 +1719,10 @@ class AutoGraspScanner(Node):
 
             fig_path = self.current_figure_dir / "topdown_grasp_result.png"
 
-            plt.figure(figsize=(6.8, 6.2))
+            plt.figure(figsize=(6.5, 6.0))
+            plt.scatter(points[:, 0], points[:, 1], s=2, alpha=0.65, label="Final object cloud")
+            plt.scatter([grasp_x], [grasp_y], marker="x", s=90, label="Estimated grasp position")
 
-            # -----------------------------
-            # 1) Ground-truth cloud first
-            #    -> lighter, smaller, more transparent
-            # -----------------------------
-            gt_handle = None
-            if gt_data is not None:
-                gt_pcd_path = gt_data.get("gt_pcd_path", "")
-
-                if gt_pcd_path is not None and gt_pcd_path != "":
-                    gt_pcd_path = os.path.expanduser(gt_pcd_path)
-
-                    if os.path.exists(gt_pcd_path):
-                        try:
-                            gt_pcd = o3d.io.read_point_cloud(gt_pcd_path)
-
-                            if gt_pcd is not None and len(gt_pcd.points) > 0:
-                                gt_points = np.asarray(gt_pcd.points)
-
-                                gt_handle = plt.scatter(
-                                    gt_points[:, 0],
-                                    gt_points[:, 1],
-                                    s=0.8,                  # smaller
-                                    alpha=0.18,             # lighter
-                                    c="green",
-                                    label="Ground-truth object cloud",
-                                    zorder=1
-                                )
-                        except Exception as e:
-                            self.get_logger().warn(
-                                f"Could not load GT point cloud for plot: {e}"
-                            )
-
-            # -----------------------------
-            # 2) Estimated cloud second
-            #    -> stronger, slightly larger, on top
-            # -----------------------------
-            est_handle = plt.scatter(
-                points[:, 0],
-                points[:, 1],
-                s=5,                      # a bit larger
-                alpha=0.75,               # more visible
-                c="tab:blue",
-                label="Estimated object cloud",
-                zorder=3
-            )
-
-            # -----------------------------
-            # 3) Estimated grasp position
-            # -----------------------------
-            grasp_handle = plt.scatter(
-                [grasp_x],
-                [grasp_y],
-                marker="x",
-                s=110,
-                c="red",
-                linewidths=2.0,
-                label="Estimated grasp position",
-                zorder=5
-            )
-
-            # -----------------------------
-            # 4) Yaw arrow
-            # -----------------------------
             if np.isfinite(yaw):
                 arrow_length = 0.08
                 plt.arrow(
@@ -1653,66 +1730,31 @@ class AutoGraspScanner(Node):
                     grasp_y,
                     arrow_length * np.cos(yaw),
                     arrow_length * np.sin(yaw),
-                    head_width=0.010,
-                    head_length=0.014,
-                    length_includes_head=True,
-                    color="red",
-                    linewidth=2.0,
-                    zorder=5
+                    head_width=0.015,
+                    length_includes_head=True
                 )
 
-            # -----------------------------
-            # 5) GT centre
-            # -----------------------------
-            gt_centre_handle = None
             if gt_data is not None:
                 gt_x = self.safe_float_from_dict(gt_data, "bbox_center_x")
                 gt_y = self.safe_float_from_dict(gt_data, "bbox_center_y")
 
                 if np.isfinite(gt_x) and np.isfinite(gt_y):
-                    gt_centre_handle = plt.scatter(
+                    plt.scatter(
                         [gt_x],
                         [gt_y],
                         marker="o",
-                        s=120,
+                        s=90,
                         facecolors="none",
                         edgecolors="black",
-                        linewidths=1.8,
-                        label="Ground-truth object centre",
-                        zorder=6
+                        label="Ground-truth object centre"
                     )
 
             plt.xlabel("x in base_link (m)")
             plt.ylabel("y in base_link (m)")
             plt.title("Top-down object cloud and estimated grasp pose")
             plt.axis("equal")
-            plt.grid(True, alpha=0.4)
-
-            # -----------------------------
-            # Legend order manually fixed
-            # -----------------------------
-            handles = []
-            labels = []
-
-            if est_handle is not None:
-                handles.append(est_handle)
-                labels.append("Estimated object cloud")
-
-            if gt_handle is not None:
-                handles.append(gt_handle)
-                labels.append("Ground-truth object cloud")
-
-            if grasp_handle is not None:
-                handles.append(grasp_handle)
-                labels.append("Estimated grasp position")
-
-            if gt_centre_handle is not None:
-                handles.append(gt_centre_handle)
-                labels.append("Ground-truth object centre")
-
-            if len(handles) > 0:
-                plt.legend(handles, labels, loc="upper left")
-
+            plt.grid(True)
+            plt.legend()
             plt.tight_layout()
             plt.savefig(fig_path, dpi=250)
             plt.close()
@@ -1801,6 +1843,23 @@ class AutoGraspScanner(Node):
             "grasp_model": self.grasp_model_name,
             "depth_scale_method": self.last_depth_scale_method,
             "last_depth_scale": self.last_depth_scale,
+            "use_table_depth_scale": self.use_table_depth_scale,
+            "enable_fused_table_z_alignment": self.enable_fused_table_z_alignment,
+            "table_alignment_use_plane": self.table_alignment_use_plane,
+            "max_table_z_correction": self.max_table_z_correction,
+            "reject_large_table_z_correction": self.reject_large_table_z_correction,
+            "max_table_plane_z_error": self.max_table_plane_z_error,
+            "enable_table_height_filter": self.enable_table_height_filter,
+            "enable_plane_removal": self.enable_plane_removal,
+            "plane_distance_threshold": self.plane_distance_threshold,
+            "object_above_plane_threshold": self.object_above_plane_threshold,
+            "plane_min_inlier_ratio": self.plane_min_inlier_ratio,
+            "plane_min_normal_z": self.plane_min_normal_z,
+            "pixel_step": self.pixel_step,
+            "frame_voxel_size": self.frame_voxel_size,
+            "final_voxel_size": self.final_voxel_size,
+            "dbscan_eps": self.dbscan_eps,
+            "dbscan_min_points": self.dbscan_min_points,
 
             "gt_object_name": gt_object_name,
             "gt_pcd_path": gt_pcd_path,
@@ -1893,14 +1952,31 @@ class AutoGraspScanner(Node):
 
         self.get_logger().info(f"Cleaning input points: {len(pcd.points)}")
         self.record_cloud_stage("01_input_downsampled", pcd)
-
         self.save_debug_pointcloud("01_input_downsampled.ply", pcd)
 
+        # Step 1: remove the reliable table plane first, while table points still exist.
+        # This is the key fix. Running RANSAC after the height filter can make the
+        # mug side/top or high noise become the false plane.
+        pcd = self.remove_reliable_table_plane(pcd)
+        self.record_cloud_stage("02_after_plane_removal", pcd)
+
+        if pcd is None or len(pcd.points) < 50:
+            self.get_logger().warn("Point cloud too small after plane removal.")
+            return None
+
+        # Step 2: apply table-height foreground filter after plane removal.
         pcd = self.filter_pcd_by_table_height(pcd)
+        self.record_cloud_stage("03_after_table_height_filter", pcd)
+        # Also keep the old key for compatibility with the summary script.
         self.record_cloud_stage("01b_after_table_height_filter", pcd)
+        self.save_debug_pointcloud("03_after_table_height_filter.ply", pcd)
         self.save_debug_pointcloud("01b_after_table_height_filter.ply", pcd)
 
-        # Step 1: Remove sparse isolated points using radius outlier removal.
+        if pcd is None or len(pcd.points) < 50:
+            self.get_logger().warn("Point cloud too small after table-height filtering.")
+            return None
+
+        # Step 3: remove sparse isolated points using radius outlier removal.
         if self.enable_radius_outlier_removal and len(pcd.points) >= 50:
             try:
                 pcd, _ = pcd.remove_radius_outlier(
@@ -1911,14 +1987,17 @@ class AutoGraspScanner(Node):
             except Exception as e:
                 self.get_logger().warn(f"Radius outlier removal failed: {e}")
 
+        self.record_cloud_stage("04_after_radius_outlier", pcd)
+        # Also keep the old key for compatibility.
         self.record_cloud_stage("02_after_radius_outlier", pcd)
+        self.save_debug_pointcloud("04_after_radius_outlier.ply", pcd)
         self.save_debug_pointcloud("02_after_radius_outlier.ply", pcd)
 
-        if len(pcd.points) < 50:
+        if pcd is None or len(pcd.points) < 50:
             self.get_logger().warn("Point cloud too small after radius outlier removal.")
             return None
 
-        # Step 2: Apply mild statistical outlier removal.
+        # Step 4: apply mild statistical outlier removal.
         if self.enable_statistical_outlier_removal and len(pcd.points) >= 50:
             try:
                 pcd, _ = pcd.remove_statistical_outlier(
@@ -1929,112 +2008,32 @@ class AutoGraspScanner(Node):
             except Exception as e:
                 self.get_logger().warn(f"Statistical outlier removal failed: {e}")
 
+        self.record_cloud_stage("05_after_statistical_outlier", pcd)
+        # Also keep the old key for compatibility.
         self.record_cloud_stage("03_after_statistical_outlier", pcd)
+        self.save_debug_pointcloud("05_after_statistical_outlier.ply", pcd)
         self.save_debug_pointcloud("03_after_statistical_outlier.ply", pcd)
 
-        if len(pcd.points) < 50:
+        if pcd is None or len(pcd.points) < 50:
             self.get_logger().warn("Point cloud too small after statistical outlier removal.")
             return None
 
-        # Step 3: Optional geometric plane removal.
-        if not self.enable_plane_removal:
-            self.get_logger().info(
-                "Plane removal disabled. Using filtered point cloud as object candidate."
-            )
+        object_pcd = pcd
+        object_points = np.asarray(object_pcd.points)
 
-            object_pcd = pcd
-            object_points = np.asarray(object_pcd.points)
-
-            if len(object_pcd.colors) == len(object_pcd.points):
-                object_colors = np.asarray(object_pcd.colors)
-            else:
-                object_colors = np.ones_like(object_points)
-
-            self.save_debug_pointcloud("04_plane_removal_skipped.ply", object_pcd)
-
+        if len(object_pcd.colors) == len(object_pcd.points):
+            object_colors = np.asarray(object_pcd.colors)
         else:
-            try:
-                plane_model, plane_inliers = pcd.segment_plane(
-                    distance_threshold=self.plane_distance_threshold,
-                    ransac_n=3,
-                    num_iterations=800
-                )
-            except Exception as e:
-                self.get_logger().warn(f"Plane segmentation failed: {e}")
-                return None
-
-            a, b, c, d = plane_model
-            points = np.asarray(pcd.points)
-
-            if len(pcd.colors) == len(pcd.points):
-                colors = np.asarray(pcd.colors)
-            else:
-                colors = np.ones_like(points)
-
-            norm = np.sqrt(a * a + b * b + c * c)
-
-            if norm < 1e-6:
-                self.get_logger().warn("Invalid plane normal.")
-                return None
-
-            normal_z = abs(c / norm)
-            inlier_ratio = float(len(plane_inliers)) / float(len(points))
-
-            self.get_logger().info(
-                f"Detected plane: inlier_ratio={inlier_ratio:.3f}, "
-                f"normal_z={normal_z:.3f}, "
-                f"inliers={len(plane_inliers)}/{len(points)}"
-            )
-
-            plane_is_reliable = (
-                inlier_ratio >= self.plane_min_inlier_ratio
-                and normal_z >= self.plane_min_normal_z
-            )
-
-            if not plane_is_reliable:
-                self.get_logger().warn(
-                    "Plane is not reliable. Skipping plane removal to avoid cutting the object."
-                )
-
-                object_pcd = pcd
-                object_points = points
-                object_colors = colors
-                self.save_debug_pointcloud("04_plane_removal_rejected.ply", object_pcd)
-
-            else:
-                dist = a * points[:, 0] + b * points[:, 1] + c * points[:, 2] + d
-                dist = dist / norm
-
-                if c < 0:
-                    dist = -dist
-
-                above_mask = dist > self.object_above_plane_threshold
-
-                object_points = points[above_mask]
-                object_colors = colors[above_mask]
-
-                self.get_logger().info(
-                    f"After plane removal: {len(object_points)} object candidate points"
-                )
-
-                if len(object_points) < 30:
-                    self.get_logger().warn(
-                        f"Not enough points above plane: {len(object_points)}. "
-                        "Falling back to filtered point cloud."
-                    )
-                    object_points = points
-                    object_colors = colors
-
-                object_pcd = self.copy_pcd_from_arrays(object_points, object_colors)
-                self.save_debug_pointcloud("04_after_plane_removal.ply", object_pcd)
+            object_colors = np.ones_like(object_points)
 
         self.record_cloud_stage("04_object_candidate", object_pcd)
+        self.save_debug_pointcloud("06_object_candidate.ply", object_pcd)
 
         if object_points is None or len(object_points) < 30:
             self.get_logger().warn("Not enough object candidate points.")
             return None
 
-        # Step 4: DBSCAN to remove fragments.
+        # Step 5: DBSCAN to remove fragments.
         try:
             labels = np.array(
                 object_pcd.cluster_dbscan(
@@ -2144,6 +2143,8 @@ class AutoGraspScanner(Node):
 
         selected_pcd = self.copy_pcd_from_arrays(selected_points, selected_colors)
 
+        self.save_debug_pointcloud("07_after_dbscan_selected_clusters.ply", selected_pcd)
+        # Keep old filename for your existing inspection commands.
         self.save_debug_pointcloud("05_after_dbscan_selected_clusters.ply", selected_pcd)
 
         self.record_cloud_stage("05_after_dbscan_selected", selected_pcd)

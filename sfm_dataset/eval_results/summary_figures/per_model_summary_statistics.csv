@@ -1,0 +1,40 @@
+depth_model,grasp_model,configuration_profile,plane_removal,metric,n,mean,std,min,max
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Centre XY error mm,10,12.0393,3.4713,7.4848,16.5580
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Centre 3D error mm,10,32.9696,13.8080,10.3244,53.5562
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Top height error mm,10,36.1104,16.7011,9.9414,60.1805
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Yaw error deg,10,9.4642,10.2129,0.5755,33.2680
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Cloud est-to-GT mean distance mm,10,14.4609,4.2863,9.5164,21.7818
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Cloud est-to-GT median distance mm,10,11.4909,3.4559,8.0477,18.1956
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Cloud est-to-GT 95th percentile distance mm,10,37.7330,11.8884,22.2066,52.9183
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Cloud GT-to-est mean distance mm,10,13.8363,3.3539,10.2077,18.7565
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Cloud GT-to-est median distance mm,10,11.0136,4.3361,6.9281,19.2570
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Cloud GT-to-est 95th percentile distance mm,10,36.8593,8.7029,30.4125,54.4201
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Final object points,10,2565.0000,1062.3879,549.0000,3685.0000
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Total compute time s,10,0.1888,0.0238,0.1479,0.2188
+Depth Anything V2,pca,Depth Anything V2 / plane ON,True,Mean frame processing time s,10,0.2536,0.0067,0.2444,0.2675
+Depth Pro,pca,Depth Pro / plane OFF,True,Centre XY error mm,10,12.6429,4.0807,7.6923,18.7733
+Depth Pro,pca,Depth Pro / plane OFF,True,Centre 3D error mm,10,17.8224,3.0809,13.2223,21.9233
+Depth Pro,pca,Depth Pro / plane OFF,True,Top height error mm,10,20.5399,6.5728,9.0371,29.8072
+Depth Pro,pca,Depth Pro / plane OFF,True,Yaw error deg,10,11.5021,13.4266,0.9474,41.6390
+Depth Pro,pca,Depth Pro / plane OFF,True,Cloud est-to-GT mean distance mm,10,10.8477,2.1461,8.9938,15.3255
+Depth Pro,pca,Depth Pro / plane OFF,True,Cloud est-to-GT median distance mm,10,8.8758,1.1018,7.4574,10.3182
+Depth Pro,pca,Depth Pro / plane OFF,True,Cloud est-to-GT 95th percentile distance mm,10,29.9865,10.5739,22.0531,53.4630
+Depth Pro,pca,Depth Pro / plane OFF,True,Cloud GT-to-est mean distance mm,10,9.1195,2.5553,6.6283,14.1573
+Depth Pro,pca,Depth Pro / plane OFF,True,Cloud GT-to-est median distance mm,10,7.4721,3.5171,4.8522,14.5597
+Depth Pro,pca,Depth Pro / plane OFF,True,Cloud GT-to-est 95th percentile distance mm,10,21.5582,4.0254,15.8834,28.9224
+Depth Pro,pca,Depth Pro / plane OFF,True,Final object points,10,3017.2000,982.2269,1156.0000,3789.0000
+Depth Pro,pca,Depth Pro / plane OFF,True,Total compute time s,10,0.1954,0.0247,0.1532,0.2224
+Depth Pro,pca,Depth Pro / plane OFF,True,Mean frame processing time s,10,0.9162,0.0056,0.9076,0.9272
+ZoeDepth,pca,ZoeDepth / plane ON,True,Centre XY error mm,10,16.7343,4.9878,7.3880,22.2575
+ZoeDepth,pca,ZoeDepth / plane ON,True,Centre 3D error mm,10,22.2759,3.5153,16.6509,26.7662
+ZoeDepth,pca,ZoeDepth / plane ON,True,Top height error mm,10,17.7401,18.0454,0.1452,51.1986
+ZoeDepth,pca,ZoeDepth / plane ON,True,Yaw error deg,10,13.1612,12.7457,0.5450,41.0271
+ZoeDepth,pca,ZoeDepth / plane ON,True,Cloud est-to-GT mean distance mm,10,12.7491,2.8573,10.3129,18.6611
+ZoeDepth,pca,ZoeDepth / plane ON,True,Cloud est-to-GT median distance mm,10,9.9475,0.9547,8.6248,11.8022
+ZoeDepth,pca,ZoeDepth / plane ON,True,Cloud est-to-GT 95th percentile distance mm,10,35.4220,14.4688,22.1548,64.9553
+ZoeDepth,pca,ZoeDepth / plane ON,True,Cloud GT-to-est mean distance mm,10,11.7015,2.8708,8.5257,15.5358
+ZoeDepth,pca,ZoeDepth / plane ON,True,Cloud GT-to-est median distance mm,10,9.1017,4.0350,5.7251,16.6485
+ZoeDepth,pca,ZoeDepth / plane ON,True,Cloud GT-to-est 95th percentile distance mm,10,31.0429,7.4695,24.5311,45.8810
+ZoeDepth,pca,ZoeDepth / plane ON,True,Final object points,10,2751.0000,1017.7712,838.0000,3648.0000
+ZoeDepth,pca,ZoeDepth / plane ON,True,Total compute time s,10,0.1930,0.0260,0.1546,0.2249
+ZoeDepth,pca,ZoeDepth / plane ON,True,Mean frame processing time s,10,0.6613,0.0104,0.6417,0.6749

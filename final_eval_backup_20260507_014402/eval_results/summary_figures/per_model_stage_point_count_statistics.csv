@@ -1,0 +1,22 @@
+depth_model,grasp_model,configuration_profile,stage,n,mean_points,std_points,min_points,max_points
+Depth Anything V2,pca,Depth Anything V2 / plane ON,Global fused,10,291267.8000,4516.7625,281688.0000,296076.0000
+Depth Anything V2,pca,Depth Anything V2 / plane ON,Downsampled,10,31345.7000,1521.7048,28397.0000,32613.0000
+Depth Anything V2,pca,Depth Anything V2 / plane ON,Height filter,10,2703.2000,1100.7425,577.0000,3798.0000
+Depth Anything V2,pca,Depth Anything V2 / plane ON,Radius filter,10,2698.4000,1101.6038,572.0000,3790.0000
+Depth Anything V2,pca,Depth Anything V2 / plane ON,Stat filter,10,2600.6000,1068.7416,549.0000,3717.0000
+Depth Anything V2,pca,Depth Anything V2 / plane ON,Candidate,10,2600.6000,1068.7416,549.0000,3717.0000
+Depth Anything V2,pca,Depth Anything V2 / plane ON,DBSCAN,10,2565.0000,1062.3879,549.0000,3685.0000
+Depth Pro,pca,Depth Pro / plane OFF,Global fused,10,261155.7000,5788.4390,251820.0000,267539.0000
+Depth Pro,pca,Depth Pro / plane OFF,Downsampled,10,21894.8000,1394.5778,19655.0000,24028.0000
+Depth Pro,pca,Depth Pro / plane OFF,Height filter,10,3243.7000,1058.7448,1237.0000,4074.0000
+Depth Pro,pca,Depth Pro / plane OFF,Radius filter,10,3243.7000,1058.7448,1237.0000,4074.0000
+Depth Pro,pca,Depth Pro / plane OFF,Stat filter,10,3018.5000,981.9154,1156.0000,3789.0000
+Depth Pro,pca,Depth Pro / plane OFF,Candidate,10,3018.5000,981.9154,1156.0000,3789.0000
+Depth Pro,pca,Depth Pro / plane OFF,DBSCAN,10,3017.2000,982.2269,1156.0000,3789.0000
+ZoeDepth,pca,ZoeDepth / plane ON,Global fused,10,273337.0000,4290.0732,268087.0000,279555.0000
+ZoeDepth,pca,ZoeDepth / plane ON,Downsampled,10,35149.3000,1765.1664,32537.0000,37814.0000
+ZoeDepth,pca,ZoeDepth / plane ON,Height filter,10,2950.5000,1095.7938,887.0000,3924.0000
+ZoeDepth,pca,ZoeDepth / plane ON,Radius filter,10,2950.5000,1095.7938,887.0000,3924.0000
+ZoeDepth,pca,ZoeDepth / plane ON,Stat filter,10,2751.0000,1017.7712,838.0000,3648.0000
+ZoeDepth,pca,ZoeDepth / plane ON,Candidate,10,2751.0000,1017.7712,838.0000,3648.0000
+ZoeDepth,pca,ZoeDepth / plane ON,DBSCAN,10,2751.0000,1017.7712,838.0000,3648.0000

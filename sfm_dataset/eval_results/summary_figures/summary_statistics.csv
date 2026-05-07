@@ -1,0 +1,17 @@
+depth_models_included,grasp_models_included
+Depth Anything V2; Depth Pro; ZoeDepth,pca
+
+metric,n,mean,std,min,max
+Centre XY error mm,30,13.8055,4.7127,7.3880,22.2575
+Centre 3D error mm,30,24.3560,10.5470,10.3244,53.5562
+Top height error mm,30,24.7968,16.7698,0.1452,60.1805
+Yaw error deg,30,11.3758,12.3002,0.5450,41.6390
+Cloud est-to-GT mean distance mm,30,12.6859,3.5438,8.9938,21.7818
+Cloud est-to-GT median distance mm,30,10.1048,2.4170,7.4574,18.1956
+Cloud est-to-GT 95th percentile distance mm,30,34.3805,12.8338,22.0531,64.9553
+Cloud GT-to-est mean distance mm,30,11.5524,3.5203,6.6283,18.7565
+Cloud GT-to-est median distance mm,30,9.1958,4.2323,4.8522,19.2570
+Cloud GT-to-est 95th percentile distance mm,30,29.8201,9.4347,15.8834,54.4201
+Final object points,30,2777.7333,1038.0447,549.0000,3789.0000
+Total compute time s,30,0.1924,0.0250,0.1479,0.2249
+Mean frame processing time s,30,0.6104,0.2730,0.2444,0.9272

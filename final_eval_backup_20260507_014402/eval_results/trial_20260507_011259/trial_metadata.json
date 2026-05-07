@@ -1,0 +1,102 @@
+{
+    "trial_id": "trial_20260507_011259",
+    "depth_model": "depth_pro",
+    "grasp_model": "pca",
+    "pixel_step": 3,
+    "frame_voxel_size": 0.006,
+    "final_voxel_size": 0.005,
+    "frames_per_view": 10,
+    "process_every_n_frames": 2,
+    "depth_scaling": {
+        "use_table_depth_scale": true,
+        "table_z": 0.0,
+        "table_scale_v_min_ratio": 0.6,
+        "table_scale_v_max_ratio": 0.92,
+        "table_scale_step": 8
+    },
+    "fused_table_z_alignment": {
+        "enabled": true,
+        "table_alignment_use_plane": true,
+        "table_alignment_percentile": 2.0,
+        "max_table_z_correction": 0.03,
+        "reject_large_table_z_correction": true,
+        "max_table_plane_z_error": 0.06
+    },
+    "table_height_filter": {
+        "enabled": true,
+        "min_object_height_above_table": 0.01,
+        "max_object_height_above_table": 0.32
+    },
+    "scan_waypoints": [
+        {
+            "name": "center_topdown",
+            "positions": [
+                -0.2194,
+                -1.9407,
+                1.8675,
+                -1.4961,
+                -1.5702,
+                2.9206
+            ],
+            "capture": true
+        },
+        {
+            "name": "right_view",
+            "positions": [
+                0.1177,
+                -1.8458,
+                1.805,
+                -1.5289,
+                -1.5698,
+                3.2577
+            ],
+            "capture": true
+        },
+        {
+            "name": "left_view_symmetric",
+            "positions": [
+                -0.5565,
+                -2.0356,
+                1.93,
+                -1.4633,
+                -1.5706,
+                2.5835
+            ],
+            "capture": true
+        },
+        {
+            "name": "return_center",
+            "positions": [
+                -0.2194,
+                -1.9407,
+                1.8675,
+                -1.4961,
+                -1.5702,
+                2.9206
+            ],
+            "capture": false
+        }
+    ],
+    "workspace": {
+        "x_min": -0.1,
+        "x_max": 0.85,
+        "y_min": -0.5,
+        "y_max": 0.5,
+        "z_min": -0.05,
+        "z_max": 0.45
+    },
+    "cleaning": {
+        "enable_plane_removal": true,
+        "plane_distance_threshold": 0.02,
+        "object_above_plane_threshold": 0.012,
+        "enable_radius_outlier_removal": true,
+        "radius_outlier_nb_points": 5,
+        "radius_outlier_radius": 0.035,
+        "enable_statistical_outlier_removal": true,
+        "outlier_nb_neighbors": 20,
+        "outlier_std_ratio": 1.8,
+        "dbscan_eps": 0.045,
+        "dbscan_min_points": 12,
+        "keep_nearby_clusters": false
+    }
+}

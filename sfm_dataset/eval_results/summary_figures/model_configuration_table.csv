@@ -1,0 +1,4 @@
+depth_model,grasp_model,configuration_profile,notes,Table-depth scale,Table z,Fused z alignment,Height filter,Plane removal,Plane dist.,Above-plane th.,Plane min normal-z,Pixel step,Frame voxel,Final voxel,DBSCAN eps,DBSCAN min pts
+Depth Anything V2,pca,Depth Anything V2 / plane ON,Plane removal enabled because stronger table/background artefacts were observed,True,0.0,True,True,True,0.024,0.016,0.55,3,0.006,0.005,0.045,12
+Depth Pro,pca,Depth Pro / plane OFF,Table-depth scaling + height filter + outlier removal + DBSCAN,True,0.0,True,True,True,0.02,0.012,0.6,3,0.006,0.005,0.045,12
+ZoeDepth,pca,ZoeDepth / plane ON,Plane removal enabled because tilted planar artefacts were observed,True,0.0,True,True,True,0.022,0.015,0.55,3,0.006,0.005,0.045,12

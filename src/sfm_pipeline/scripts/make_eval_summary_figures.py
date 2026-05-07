@@ -49,9 +49,6 @@ SUMMARY_METRICS = [
     ("mean_frame_processing_time_s", "Mean frame processing time s"),
 ]
 
-# Intended experimental profiles.
-# If these parameter values are not present in experiment_log.csv, this script
-# uses this table so that the summary still shows the intended model-specific setup.
 MODEL_CONFIG_PROFILES = {
     "depth_pro": {
         "profile_name": "Depth Pro / plane OFF",
@@ -190,6 +187,18 @@ def short_depth_label(depth_model):
     return depth_model
 
 
+def short_object_name(raw_name):
+    name = str(raw_name).strip()
+
+    if name == "":
+        return "Unknown object"
+
+    name = name.replace(".usd", "")
+    name = name.replace("SM_", "")
+
+    return name
+
+
 def get_profile(depth_model):
     depth_model = normalise_depth_model_name(depth_model)
     return MODEL_CONFIG_PROFILES.get(
@@ -287,6 +296,68 @@ def add_value_labels(ax, bars, values, decimals=0):
         )
 
 
+def get_depth_model_colour_map(rows):
+    model_names = []
+
+    for row in rows:
+        model = short_depth_label(row.get("depth_model", ""))
+
+        if model == "":
+            continue
+
+        if model not in model_names:
+            model_names.append(model)
+
+    default_colours = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+
+    colour_map = {}
+    for i, model in enumerate(model_names):
+        colour_map[model] = default_colours[i % len(default_colours)]
+
+    return colour_map
+
+
+def add_object_group_separators(ax, rows, y_top):
+    if len(rows) == 0:
+        return
+
+    object_names = [
+        short_object_name(row.get("gt_object_name", ""))
+        for row in rows
+    ]
+
+    group_start = 0
+    current_object = object_names[0]
+
+    for i in range(1, len(object_names) + 1):
+        is_end = i == len(object_names)
+
+        if is_end or object_names[i] != current_object:
+            group_end = i - 1
+            group_mid = (group_start + group_end) / 2.0 + 1.0
+
+            ax.text(
+                group_mid,
+                y_top * 0.96,
+                current_object,
+                ha="center",
+                va="top",
+                fontsize=9,
+                alpha=0.75,
+            )
+
+            if not is_end:
+                ax.axvline(
+                    x=i + 0.5,
+                    linestyle="--",
+                    linewidth=1.0,
+                    alpha=0.45,
+                )
+
+                group_start = i
+                current_object = object_names[i]
+
+
 def get_stage_statistics(rows):
     used_keys = []
     used_labels = []
@@ -315,34 +386,55 @@ def plot_metric_per_trial(rows, key, ylabel, title, filename, decimals=1):
     values = np.array([to_float(r, key) for r in rows], dtype=float)
     valid = np.isfinite(values)
 
-    x = np.arange(1, len(values) + 1)[valid]
-    y = values[valid]
-
-    if len(y) == 0:
+    if np.count_nonzero(valid) == 0:
         print(f"[WARN] No valid values for {key}. Skipping {filename}.")
         return
 
-    tick_labels = []
-    for i, row in enumerate(rows, start=1):
-        if not valid[i - 1]:
-            continue
-        tick_labels.append(f"{i}\n{short_depth_label(row.get('depth_model', ''))}")
+    x_all = np.arange(1, len(values) + 1)
+    x = x_all[valid]
+    y = values[valid]
+    valid_rows = [row for row, keep in zip(rows, valid) if keep]
 
-    plt.figure(figsize=(max(10, len(y) * 0.65), 5.2))
+    colour_map = get_depth_model_colour_map(rows)
+    bar_colours = [
+        colour_map.get(short_depth_label(row.get("depth_model", "")))
+        for row in valid_rows
+    ]
+
+    plt.figure(figsize=(max(11.5, len(rows) * 0.75), 5.8))
     ax = plt.gca()
 
-    bars = ax.bar(x, y)
+    bars = ax.bar(x, y, color=bar_colours)
     add_value_labels(ax, bars, y, decimals=decimals)
 
-    ax.set_xlabel("Trial and depth model")
+    ax.set_xlabel("Trial number")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    ax.set_xticks(x)
-    ax.set_xticklabels(tick_labels, rotation=0, fontsize=8)
+    ax.set_xticks(x_all)
+    ax.set_xticklabels([str(i) for i in x_all], fontsize=9)
 
     y_max = np.max(y)
     if np.isfinite(y_max) and y_max > 0:
-        ax.set_ylim(0, y_max * 1.22)
+        y_top = y_max * 1.25
+        ax.set_ylim(0, y_top)
+        add_object_group_separators(ax, rows, y_top)
+
+    legend_handles = []
+    for model, colour in colour_map.items():
+        legend_handles.append(
+            plt.Rectangle((0, 0), 1, 1, color=colour, label=model)
+        )
+
+    if len(legend_handles) > 0:
+        ax.legend(
+            handles=legend_handles,
+            loc="upper center",
+            bbox_to_anchor=(0.5, -0.13),
+            ncol=min(3, len(legend_handles)),
+            frameon=False,
+        )
+
+    ax.grid(axis="y", alpha=0.25)
 
     plt.tight_layout()
     plt.savefig(OUT_DIR / filename, dpi=250)
@@ -994,26 +1086,140 @@ def main():
     if len(rows) == 0:
         raise RuntimeError("No rows in experiment log.")
 
-    # Per-trial metric plots. X-axis labels include model names.
-    plot_metric_per_trial(rows, "center_error_xy_mm", "Error (mm)", "Object centre XY error per trial by depth model", "centre_xy_error_per_trial.png", decimals=1)
-    plot_metric_per_trial(rows, "center_error_3d_mm", "Error (mm)", "Object centre 3D error per trial by depth model", "centre_3d_error_per_trial.png", decimals=1)
-    plot_metric_per_trial(rows, "top_z_error_mm", "Error (mm)", "Object top height error per trial by depth model", "top_z_error_per_trial.png", decimals=1)
-    plot_metric_per_trial(rows, "yaw_error_deg", "Error (degrees)", "Grasp yaw error per trial by depth model", "yaw_error_per_trial.png", decimals=1)
+    plot_metric_per_trial(
+        rows,
+        "center_error_xy_mm",
+        "Error (mm)",
+        "Object centre XY error per trial",
+        "centre_xy_error_per_trial.png",
+        decimals=1,
+    )
 
-    plot_metric_per_trial(rows, "cloud_est_to_gt_mean_mm", "Distance (mm)", "Estimated cloud to GT cloud mean distance per trial by depth model", "cloud_est_to_gt_mean_per_trial.png", decimals=1)
-    plot_metric_per_trial(rows, "cloud_est_to_gt_median_mm", "Distance (mm)", "Estimated cloud to GT cloud median distance per trial by depth model", "cloud_est_to_gt_median_per_trial.png", decimals=1)
-    plot_metric_per_trial(rows, "cloud_est_to_gt_p95_mm", "Distance (mm)", "Estimated cloud to GT cloud 95th percentile distance per trial by depth model", "cloud_est_to_gt_p95_per_trial.png", decimals=1)
-    plot_metric_per_trial(rows, "cloud_gt_to_est_mean_mm", "Distance (mm)", "GT cloud to estimated cloud mean distance per trial by depth model", "cloud_gt_to_est_mean_per_trial.png", decimals=1)
+    plot_metric_per_trial(
+        rows,
+        "center_error_3d_mm",
+        "Error (mm)",
+        "Object centre 3D error per trial",
+        "centre_3d_error_per_trial.png",
+        decimals=1,
+    )
 
-    plot_metric_per_trial(rows, "total_compute_time_s", "Time (s)", "Total computation time per trial by depth model", "compute_time_per_trial.png", decimals=2)
-    plot_metric_per_trial(rows, "final_object_points", "Number of points", "Final object point count per trial by depth model", "final_object_points_per_trial.png", decimals=0)
+    plot_metric_per_trial(
+        rows,
+        "top_z_error_mm",
+        "Error (mm)",
+        "Object top-height error per trial",
+        "top_z_error_per_trial.png",
+        decimals=1,
+    )
 
-    # Per-model summary plots.
-    plot_metric_mean_by_model(rows, "cloud_est_to_gt_mean_mm", "Distance (mm)", "Mean estimated-to-GT cloud distance by depth model", "model_mean_cloud_est_to_gt_mean.png", decimals=1)
-    plot_metric_mean_by_model(rows, "cloud_est_to_gt_p95_mm", "Distance (mm)", "95th percentile estimated-to-GT cloud distance by depth model", "model_mean_cloud_est_to_gt_p95.png", decimals=1)
-    plot_metric_mean_by_model(rows, "center_error_xy_mm", "Error (mm)", "Mean object centre XY error by depth model", "model_mean_centre_xy_error.png", decimals=1)
-    plot_metric_mean_by_model(rows, "top_z_error_mm", "Error (mm)", "Mean object top height error by depth model", "model_mean_top_z_error.png", decimals=1)
-    plot_metric_mean_by_model(rows, "total_compute_time_s", "Time (s)", "Mean computation time by depth model", "model_mean_compute_time.png", decimals=2)
+    plot_metric_per_trial(
+        rows,
+        "yaw_error_deg",
+        "Error (degrees)",
+        "Grasp yaw error per trial",
+        "yaw_error_per_trial.png",
+        decimals=1,
+    )
+
+    plot_metric_per_trial(
+        rows,
+        "cloud_est_to_gt_mean_mm",
+        "Distance (mm)",
+        "Estimated cloud to GT mean distance per trial",
+        "cloud_est_to_gt_mean_per_trial.png",
+        decimals=1,
+    )
+
+    plot_metric_per_trial(
+        rows,
+        "cloud_est_to_gt_median_mm",
+        "Distance (mm)",
+        "Estimated cloud to GT median distance per trial",
+        "cloud_est_to_gt_median_per_trial.png",
+        decimals=1,
+    )
+
+    plot_metric_per_trial(
+        rows,
+        "cloud_est_to_gt_p95_mm",
+        "Distance (mm)",
+        "Estimated cloud to GT 95th percentile distance per trial",
+        "cloud_est_to_gt_p95_per_trial.png",
+        decimals=1,
+    )
+
+    plot_metric_per_trial(
+        rows,
+        "cloud_gt_to_est_mean_mm",
+        "Distance (mm)",
+        "GT cloud to estimated cloud mean distance per trial",
+        "cloud_gt_to_est_mean_per_trial.png",
+        decimals=1,
+    )
+
+    plot_metric_per_trial(
+        rows,
+        "total_compute_time_s",
+        "Time (s)",
+        "Total computation time per trial",
+        "compute_time_per_trial.png",
+        decimals=2,
+    )
+
+    plot_metric_per_trial(
+        rows,
+        "final_object_points",
+        "Number of points",
+        "Final object point count per trial",
+        "final_object_points_per_trial.png",
+        decimals=0,
+    )
+
+    plot_metric_mean_by_model(
+        rows,
+        "cloud_est_to_gt_mean_mm",
+        "Distance (mm)",
+        "Mean estimated-to-GT cloud distance by depth model",
+        "model_mean_cloud_est_to_gt_mean.png",
+        decimals=1,
+    )
+
+    plot_metric_mean_by_model(
+        rows,
+        "cloud_est_to_gt_p95_mm",
+        "Distance (mm)",
+        "95th percentile estimated-to-GT cloud distance by depth model",
+        "model_mean_cloud_est_to_gt_p95.png",
+        decimals=1,
+    )
+
+    plot_metric_mean_by_model(
+        rows,
+        "center_error_xy_mm",
+        "Error (mm)",
+        "Mean object centre XY error by depth model",
+        "model_mean_centre_xy_error.png",
+        decimals=1,
+    )
+
+    plot_metric_mean_by_model(
+        rows,
+        "top_z_error_mm",
+        "Error (mm)",
+        "Mean object top-height error by depth model",
+        "model_mean_top_z_error.png",
+        decimals=1,
+    )
+
+    plot_metric_mean_by_model(
+        rows,
+        "total_compute_time_s",
+        "Time (s)",
+        "Mean computation time by depth model",
+        "model_mean_compute_time.png",
+        decimals=2,
+    )
 
     plot_mean_stage_counts(rows)
     plot_retention_percentage(rows)
